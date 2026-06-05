@@ -1,0 +1,6 @@
+0000000000000000000000000000000000000000 a6afa11e8387b4dc660e511e14bf6af86de270bc andowseroit <techihot@gmail.com> 1780633900 +0530	commit (initial): initial commit
+a6afa11e8387b4dc660e511e14bf6af86de270bc 805f5df10484ec6e2341057079b2f7b84e922672 andowseroit <techihot@gmail.com> 1780638317 +0530	commit: first commit
+805f5df10484ec6e2341057079b2f7b84e922672 805f5df10484ec6e2341057079b2f7b84e922672 andowseroit <techihot@gmail.com> 1780638317 +0530	Branch: renamed refs/heads/master to refs/heads/main
+805f5df10484ec6e2341057079b2f7b84e922672 805f5df10484ec6e2341057079b2f7b84e922672 andowseroit <techihot@gmail.com> 1780638352 +0530	Branch: renamed refs/heads/main to refs/heads/main
+805f5df10484ec6e2341057079b2f7b84e922672 78c4b3dbda51ef468b0bb948229646bf196899fc andowseroit <techihot@gmail.com> 1780638713 +0530	commit: fix build
+78c4b3dbda51ef468b0bb948229646bf196899fc 76c406fb0810aa9949e5b7bb1bd675772ae3f040 andowseroit <techihot@gmail.com> 1780639219 +0530	commit: updated login page ui design
