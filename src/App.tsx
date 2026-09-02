@@ -140,6 +140,7 @@ function App() {
           </ProtectedRoute>
         }
       />
+      <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
