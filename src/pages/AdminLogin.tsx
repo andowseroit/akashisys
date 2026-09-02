@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { loginUser } from "../db/supabase";
+import { loginUser, resetPassword } from "../db/supabase";
 import { useAuthStore } from "../store/useStore";
 
 export default function AdminLogin() {
