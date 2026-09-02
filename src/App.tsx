@@ -12,6 +12,7 @@ import OutstandingPage from "./pages/OutstandingPage";
 import ReportsPage from "./pages/ReportsPage";
 import CorrectionsPage from "./pages/CorrectionsPage";
 import SettingsPage from "./pages/SettingsPage";
+import ResetPassword from "./pages/ResetPassword";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { session, isLoading } = useAuthStore();
