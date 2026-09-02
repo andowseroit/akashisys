@@ -12,11 +12,6 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-// Service role client for admin operations (requires VITE_SUPABASE_SERVICE_KEY in .env.local)
-const supabaseServiceKey = import.meta.env.VITE_SUPABASE_SERVICE_KEY || "";
-export const supabaseAdmin = supabaseServiceKey
-  ? createClient(supabaseUrl, supabaseServiceKey)
-  : null;
 
 // Login with email and password
 export async function loginUser(email: string, password: string) {
