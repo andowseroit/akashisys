@@ -1,6 +1,10 @@
 import { useEffect } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
-import { getCurrentSession, onAuthStateChange } from "./db/supabase";
+import {
+  getCurrentSession,
+  getUserRole,
+  onAuthStateChange,
+} from "./db/supabase";
 import { useAuthStore } from "./store/useStore";
 import AdminNav from "./components/AdminNav";
 import AdminLogin from "./pages/AdminLogin";
@@ -12,9 +16,14 @@ import OutstandingPage from "./pages/OutstandingPage";
 import ReportsPage from "./pages/ReportsPage";
 import CorrectionsPage from "./pages/CorrectionsPage";
 import SettingsPage from "./pages/SettingsPage";
+import ResetPassword from "./pages/ResetPassword";
 
-function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { session, isLoading } = useAuthStore();
+function ProtectedRoute({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  const { session, userRole, isLoading } = useAuthStore();
 
   if (isLoading) {
     return (
@@ -28,6 +37,10 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     return <Navigate to="/" replace />;
   }
 
+  if (userRole !== "admin") {
+    return <Navigate to="/" replace />;
+  }
+
   return (
     <>
       <AdminNav />
@@ -37,32 +50,113 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 }
 
 function App() {
-  const { setSession, isLoading, setIsLoading } = useAuthStore();
+  const {
+    session,
+    setSession,
+    setUserRole,
+    isLoading,
+    setIsLoading,
+  } = useAuthStore();
 
+  // Initialize and listen for authentication changes.
   useEffect(() => {
+    let mounted = true;
+
     async function initAuth() {
       try {
-        const session = await getCurrentSession();
-        if (session) {
-          setSession(session);
+        const currentSession = await getCurrentSession();
+
+        if (mounted) {
+          setSession(currentSession);
         }
       } catch (err) {
-        console.error("Failed to get current session:", err);
-      } finally {
-        setIsLoading(false);
+        console.error(
+          "Failed to get current session:",
+          err
+        );
+
+        if (mounted) {
+          setSession(null);
+        }
       }
     }
 
     initAuth();
 
-    const subscription = onAuthStateChange((session) => {
-      setSession(session);
-    });
+    const subscription = onAuthStateChange(
+      (nextSession) => {
+        if (!mounted) return;
+
+        setSession(nextSession);
+
+        if (!nextSession) {
+          setUserRole(null);
+        }
+      }
+    );
 
     return () => {
+      mounted = false;
       subscription?.unsubscribe();
     };
-  }, [setSession, setIsLoading]);
+  }, [setSession, setUserRole]);
+
+  // Load the server-controlled role whenever the authenticated
+  // user's ID changes.
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadRole() {
+      setIsLoading(true);
+
+      if (!session?.user?.id) {
+        setUserRole(null);
+
+        if (mounted) {
+          setIsLoading(false);
+        }
+
+        return;
+      }
+
+      try {
+        const role = await getUserRole(session.user.id);
+
+        if (!mounted) return;
+
+        if (role === "admin") {
+          setUserRole("admin");
+        } else if (role === "driver") {
+          setUserRole("driver");
+        } else {
+          setUserRole(null);
+        }
+      } catch (err) {
+        console.error(
+          "Failed to load user role:",
+          err
+        );
+
+        if (mounted) {
+          setUserRole(null);
+        }
+      } finally {
+        if (mounted) {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    loadRole();
+
+    return () => {
+      mounted = false;
+    };
+  }, [
+    session?.user?.id,
+    setUserRole,
+    setIsLoading,
+  ]);
 
   if (isLoading) {
     return (
@@ -75,6 +169,7 @@ function App() {
   return (
     <Routes>
       <Route path="/" element={<AdminLogin />} />
+
       <Route
         path="/admin/dashboard"
         element={
@@ -83,6 +178,7 @@ function App() {
           </ProtectedRoute>
         }
       />
+
       <Route
         path="/admin/shops"
         element={
@@ -91,6 +187,7 @@ function App() {
           </ProtectedRoute>
         }
       />
+
       <Route
         path="/admin/sessions"
         element={
@@ -99,6 +196,7 @@ function App() {
           </ProtectedRoute>
         }
       />
+
       <Route
         path="/admin/products"
         element={
@@ -107,6 +205,7 @@ function App() {
           </ProtectedRoute>
         }
       />
+
       <Route
         path="/admin/outstanding"
         element={
@@ -115,6 +214,7 @@ function App() {
           </ProtectedRoute>
         }
       />
+
       <Route
         path="/admin/reports"
         element={
@@ -123,6 +223,7 @@ function App() {
           </ProtectedRoute>
         }
       />
+
       <Route
         path="/admin/corrections"
         element={
@@ -131,6 +232,7 @@ function App() {
           </ProtectedRoute>
         }
       />
+
       <Route
         path="/admin/settings"
         element={
@@ -139,7 +241,16 @@ function App() {
           </ProtectedRoute>
         }
       />
-      <Route path="*" element={<Navigate to="/" replace />} />
+
+      <Route
+        path="/reset-password"
+        element={<ResetPassword />}
+      />
+
+      <Route
+        path="*"
+        element={<Navigate to="/" replace />}
+      />
     </Routes>
   );
 }
