@@ -23,17 +23,62 @@ jobs:
           from pathlib import Path
           import re
 
-          path = Path('src/pages/SessionsPage.tsx')
+          path = Path("src/pages/SessionsPage.tsx")
           text = path.read_text()
 
-          text = re.sub(r'  async function fetchAllSessions\(\) \{.*?\n  \}\n\n  useEffect\(\(\) => \{ loadData\(\); \}, \[\]\);', '''  async function fetchAllSessions() {\n    const { data, error } = await supabase\n      .from("route_sessions")\n      .select("*")\n      .order("session_date", { ascending: false })\n      .order("created_at", { ascending: false });\n    if (error) throw error;\n    return data || [];\n  }\n\n  useEffect(() => { loadData(); }, []);''', text, count=1, flags=re.S)
+          # Replace the entire fetchAllSessions function up to the first useEffect.
+          pattern = r"  async function fetchAllSessions\(\) \{.*?\n  \}\n\n  useEffect\(\(\) => \{ loadData\(\); \}, \[\]\);"
+          replacement = """  async function fetchAllSessions() {
+            const { data, error } = await supabase
+              .from("route_sessions")
+              .select("*")
+              .order("session_date", { ascending: false })
+              .order("created_at", { ascending: false });
+            if (error) throw error;
+            return data || [];
+          }
 
-          text = text.replace('''      // Determine which field route_sessions uses for the session date\n      await getSessionDateField();\n\n''', '', 1)
-          text = text.replace('''      // Load today's session from route_sessions table\n      const existing = await fetchSessionForDate(today);\n\n      if (existing) {\n        setTodaySession(existing);\n      } else {\n        // Create pending session for today\n        const created = await insertSession("pending");\n        setTodaySession(created);\n      }''', '''      // Load today's session from route_sessions table\n      const existing = await fetchSessionForDate(today);\n      const sessionForToday = existing || await insertSession("pending");\n      setTodaySession(sessionForToday);''', text, 1)
-          text = text.replace('.eq("session_id", todaySession?.id);', '.eq("session_id", sessionForToday.id);', 1)
-          text = text.replace('  const [sessionDateField, setSessionDateField] = useState<"date" | "session_date" | null>(null);\n', '', 1)
+          useEffect(() => { loadData(); }, []);"""
+          text, n = re.subn(pattern, replacement, text, count=1, flags=re.S)
+          if n != 1:
+              raise SystemExit(f"fetchAllSessions replacement failed: {n}")
+
+          # Remove stale date-field autodetection call if present.
+          text, n = re.subn(
+              r"      // Determine which field route_sessions uses for the session date\n      await getSessionDateField\(\);\n\n",
+              "",
+              text,
+              count=1,
+          )
+
+          # Make loadData keep the session it just fetched/created instead of reading stale React state.
+          pattern = r"      // Load today's session from route_sessions table\n      const existing = await fetchSessionForDate\(today\);\n\n      if \(existing\) \{.*?\n      \}")
+          replacement = """      // Load today's session from route_sessions table
+            const existing = await fetchSessionForDate(today);
+            const sessionForToday = existing || await insertSession("pending");
+            setTodaySession(sessionForToday);"""
+          text, n = re.subn(pattern, replacement, text, count=1, flags=re.S)
+          if n != 1:
+              raise SystemExit(f"loadData session replacement failed: {n}")
+
+          # The first truck-load query must use the local session object, not stale state.
+          text, n = re.subn(
+              r"\.eq\(\"session_id\", todaySession\?\.id\);",
+              '.eq("session_id", sessionForToday.id);',
+              text,
+              count=1,
+          )
+          if n != 1:
+              raise SystemExit(f"truck load query replacement failed: {n}")
+
+          text = text.replace(
+              '  const [sessionDateField, setSessionDateField] = useState<"date" | "session_date" | null>(null);\n',
+              '',
+              1,
+          )
 
           path.write_text(text)
+          print("SessionsPage repair pass completed")
           PY
 
       - name: Commit repair
