@@ -1,0 +1,68 @@
+name: Repair session frontend v2
+
+on:
+  push:
+    paths:
+      - '.github/workflows/repair-session-code-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: pos-repair
+          fetch-depth: 0
+
+      - name: Patch SessionsPage
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('src/pages/SessionsPage.tsx')
+          s = p.read_text()
+
+          s, n = re.subn(r'  async function fetchAllSessions\(\) \{.*?\n  \}\n\n  useEffect\(\(\) => \{ loadData\(\); \}, \[\]\);', '''  async function fetchAllSessions() {
+            const { data, error } = await supabase
+              .from("route_sessions")
+              .select("*")
+              .order("session_date", { ascending: false })
+              .order("created_at", { ascending: false });
+            if (error) throw error;
+            return data || [];
+          }
+
+          useEffect(() => { loadData(); }, []);''', s, count=1, flags=re.S)
+          if n != 1:
+              raise SystemExit('fetchAllSessions target not found')
+
+          s = re.sub(r'      // Determine which field route_sessions uses for the session date\n      await getSessionDateField\(\);\n\n', '', s, count=1)
+
+          s, n = re.subn(r'      // Load today\'s session from route_sessions table\n      const existing = await fetchSessionForDate\(today\);\n\n      if \(existing\) \{.*?\n      \}', '''      // Load today's session from route_sessions table
+            const existing = await fetchSessionForDate(today);
+            const sessionForToday = existing || await insertSession("pending");
+            setTodaySession(sessionForToday);''', s, count=1, flags=re.S)
+          if n != 1:
+              raise SystemExit('loadData target not found')
+
+          s, n = re.subn(r'\.eq\("session_id", todaySession\?\.id\);', '.eq("session_id", sessionForToday.id);', s, count=1)
+          if n != 1:
+              raise SystemExit('truck load target not found')
+
+          s = s.replace('  const [sessionDateField, setSessionDateField] = useState<"date" | "session_date" | null>(null);\n', '', 1)
+          p.write_text(s)
+          print('session frontend repaired')
+          PY
+
+      - name: Commit repaired frontend
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/pages/SessionsPage.tsx
+          git diff --cached --quiet && exit 0
+          git commit -m 'fix: complete SessionsPage integrity repair'
+          git push origin HEAD:pos-repair
