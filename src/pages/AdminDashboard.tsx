@@ -33,17 +33,22 @@ export default function AdminDashboard() {
     try {
       const rangeStart = businessDate(dateRange === "today" ? 0 : dateRange === "week" ? -6 : -29);
       const rangeEnd = businessDate(1);
-      const [{ data: sales, error: salesError }, { data: payments, error: paymentsError }, { data: expenses, error: expensesError }, { data: returns, error: returnsError }, { data: balances, error: balancesError }, { data: sessions, error: sessionsError }, { data: truckLoad, error: truckError }] = await Promise.all([
+      const [{ data: sales, error: salesError }, { data: payments, error: paymentsError }, { data: expenses, error: expensesError }, { data: returns, error: returnsError }, { data: balances, error: balancesError }, { data: sessions, error: sessionsError }] = await Promise.all([
         supabase.from("sales").select("total_amount, quantity, shop_id, product_id, sold_at, session_id").gte("sold_at", `${rangeStart}T00:00:00+05:30`).lt("sold_at", `${rangeEnd}T00:00:00+05:30`),
         supabase.from("payments").select("amount, paid_at, session_id").gte("paid_at", `${rangeStart}T00:00:00+05:30`).lt("paid_at", `${rangeEnd}T00:00:00+05:30`),
         supabase.from("expenses").select("amount, spent_at, session_id").gte("spent_at", `${rangeStart}T00:00:00+05:30`).lt("spent_at", `${rangeEnd}T00:00:00+05:30`),
         supabase.from("returns").select("quantity, total_loss, product_id, returned_at, session_id").gte("returned_at", `${rangeStart}T00:00:00+05:30`).lt("returned_at", `${rangeEnd}T00:00:00+05:30`),
         supabase.from("outstanding_balances").select("shop_name, outstanding_amount").gt("outstanding_amount", 0).order("outstanding_amount", { ascending: false }).limit(5),
-        supabase.from("route_sessions").select("id, status, driver_id, session_date, started_at").eq("session_date", today).order("started_at", { ascending: false }),
-        supabase.from("truck_loads").select("quantity_loaded, quantity_returned, product_id, session_id, products(name, category_id)").in("session_id", ((sessions || []).map(s => s.id)))
+        supabase.from("route_sessions").select("id, status, driver_id, session_date, started_at").eq("session_date", today).order("started_at", { ascending: false })
       ]);
-      const firstError = [salesError, paymentsError, expensesError, returnsError, balancesError, sessionsError, truckError].find(Boolean);
+      const firstError = [salesError, paymentsError, expensesError, returnsError, balancesError, sessionsError].find(Boolean);
       if (firstError) throw firstError;
+
+      const sessionIds = (sessions || []).map(s => s.id);
+      const { data: truckLoad, error: truckError } = sessionIds.length
+        ? await supabase.from("truck_loads").select("quantity_loaded, quantity_returned, product_id, session_id, products(name, category_id)").in("session_id", sessionIds)
+        : { data: [], error: null };
+      if (truckError) throw truckError;
 
       const revenue = (sales || []).reduce((s, r) => s + Number(r.total_amount || 0), 0);
       const collected = (payments || []).reduce((s, r) => s + Number(r.amount || 0), 0);
