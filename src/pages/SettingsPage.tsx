@@ -1,4 +1,3 @@
-tsx
 import { useState, useEffect } from "react";
 import { supabase } from "../db/supabase";
 import { useLang } from "../i18n/LanguageContext";
