@@ -29,7 +29,8 @@ export default function AdminLogin() {
       setSession(result.session);
       navigate("/admin/dashboard");
     } catch (err: any) {
-      setError("Invalid email or password. Please try again.");
+  console.error("LOGIN ERROR:", err);
+  setError(err?.message || "Login failed.");
     } finally {
       setIsLoading(false);
     }

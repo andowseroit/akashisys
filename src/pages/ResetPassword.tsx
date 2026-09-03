@@ -34,7 +34,9 @@ export default function ResetPassword() {
         password,
       });
 
-      if (error) throw error;
+      if (error) {
+        throw error;
+      }
 
       setMessage("Password updated successfully.");
 
@@ -42,7 +44,7 @@ export default function ResetPassword() {
         navigate("/");
       }, 1500);
     } catch (err: any) {
-      setError(err.message || "Failed to update password.");
+      setError(err?.message || "Failed to update password.");
     } finally {
       setIsLoading(false);
     }
