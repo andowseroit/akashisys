@@ -1,6 +1,7 @@
 name: repair-pages
 on:
-  workflow_dispatch:
+  push:
+    branches: [pos-repair]
 permissions:
   contents: write
 jobs:
