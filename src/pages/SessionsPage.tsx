@@ -15,7 +15,6 @@ export default function SessionsPage() {
   const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [shops, setShops] = useState<any[]>([]);
-  const [sessionDateField, setSessionDateField] = useState<"date" | "session_date" | null>(null);
 
   // Truck load state
   const [products, setProducts] = useState<any[]>([]);
@@ -87,36 +86,16 @@ export default function SessionsPage() {
   }
 
   async function fetchAllSessions() {
-    const field = await getSessionDateField();
-    const fields = field ? [field, ...sessionOrderFields.filter((f) => f !== field)] : sessionOrderFields;
+  const { data, error } = await supabase
+    .from("route_sessions")
+    .select("*")
+    .order("session_date", { ascending: false })
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
 
-    for (const orderField of fields) {
-      const { data, error } = await supabase
-        .from("route_sessions")
-        .select("*")
-        .order(orderField, { ascending: false });
-
-      if (!error) {
-        const orderFieldAsDateField = orderField as typeof sessionDateFields[number];
-        if (sessionDateFields.includes(orderFieldAsDateField)) {
-          setSessionDateField(orderFieldAsDateField);
-        }
-        const latestByDate = new Map<string, any>();
-        for (const session of data || []) {
-          const sessionDate = normalizeSessionDate(session);
-          if (sessionDate && !latestByDate.has(sessionDate)) {
-            latestByDate.set(sessionDate, session);
-          }
-        }
-        return Array.from(latestByDate.values());
-      }
-      if (!isMissingColumnError(error)) throw error;
-    }
-
-    return [];
-  }
-
-  useEffect(() => { loadData(); }, []);
+useEffect(() => { loadData(); }, []);
 
   // Realtime subscriptions: refresh when new records arrive
   useEffect(() => {
@@ -167,15 +146,10 @@ export default function SessionsPage() {
   async function loadData() {
     setIsLoading(true);
     try {
-      // Determine which field route_sessions uses for the session date
-      await getSessionDateField();
-
       // Load today's session from route_sessions table
-      const existing = await fetchSessionForDate(today);
-
-      if (existing) {
-        setTodaySession(existing);
-      } else {
+  const existing = await fetchSessionForDate(today);
+  const sessionForToday = existing || await insertSession("pending");
+  setTodaySession(sessionForToday); else {
         // Create pending session for today
         const created = await insertSession("pending");
         setTodaySession(created);
@@ -210,7 +184,7 @@ export default function SessionsPage() {
         const { data: existingTruckLoads } = await supabase
           .from("truck_loads")
           .select("*")
-          .eq("session_id", todaySession?.id);
+          .eq("session_id", sessionForToday.id);
         if (existingTruckLoads) {
           const loads: Record<string, number> = {};
           existingTruckLoads.forEach((tl: any) => {
