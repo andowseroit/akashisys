@@ -51,52 +51,25 @@ export default function CorrectionsPage() {
   }
 
   async function handleDelete(table: string, record: any) {
-    if (!reason.trim()) { setMessage("Please enter a reason before deleting."); return; }
-    if (!confirm(`Delete this ${table} record? This will affect balances.`)) return;
-
+    if (!reason.trim()) { setMessage("Please enter a reason before voiding."); return; }
+    if (!confirm(`Void this ${table} record? The action will be recorded in the correction audit.`)) return;
     try {
-      // Log correction
-      await supabase.from("corrections").insert({
-        table_name: table,
-        record_id: record.id,
-        action: "delete",
-        old_values: record,
-        corrected_by: "admin",
-        reason,
-      });
-      // Delete record
-      await supabase.from(table).delete().eq("id", record.id);
-      setMessage(`Deleted successfully and logged.`);
+      let error = null;
+      if (table === "sales") ({ error } = await supabase.rpc("admin_void_sale", { p_sale_id: record.id, p_reason: reason }));
+      else if (table === "payments") ({ error } = await supabase.rpc("admin_void_payment", { p_payment_id: record.id, p_reason: reason }));
+      else if (table === "returns") ({ error } = await supabase.rpc("admin_void_return", { p_return_id: record.id, p_reason: reason }));
+      else { setMessage("This record type cannot be corrected here."); return; }
+      if (error) throw error;
+      setMessage(`Voided successfully and logged.`);
       setReason("");
       await loadRecords();
-    } catch (err: any) {
-      setMessage(`Error: ${err.message}`);
-    }
+    } catch (err: any) { setMessage(`Error: ${err.message}`); }
   }
 
-  async function handleEdit(table: string, record: any) {
-    if (!reason.trim()) { setMessage("Please enter a reason before editing."); return; }
-    try {
-      // Log correction
-      await supabase.from("corrections").insert({
-        table_name: table,
-        record_id: record.id,
-        action: "edit",
-        old_values: record,
-        new_values: editValues,
-        corrected_by: "admin",
-        reason,
-      });
-      // Update record
-      await supabase.from(table).update(editValues).eq("id", record.id);
-      setMessage("Updated successfully and logged.");
-      setEditingRecord(null);
-      setEditValues({});
-      setReason("");
-      await loadRecords();
-    } catch (err: any) {
-      setMessage(`Error: ${err.message}`);
-    }
+  async function handleEdit(_table: string, _record: any) {
+    setMessage("Direct editing is disabled. Void and re-enter the record so the audit trail remains intact.");
+    setEditingRecord(null);
+    setEditValues({});
   }
 
   async function handleAddSale() {
@@ -110,23 +83,11 @@ export default function CorrectionsPage() {
     if (!product || !quantity) { setMessage("Select product and quantity."); return; }
 
     try {
-      const { data: newSale } = await supabase.from("sales").insert({
-        shop_id: selectedShop,
-        product_id: productId,
-        quantity,
-        unit_price: product.price_per_unit,
-        sold_at: `${dateFilter}T12:00:00`,
-        synced: true,
-      }).select().single();
-
-      await supabase.from("corrections").insert({
-        table_name: "sales",
-        record_id: newSale?.id,
-        action: "add",
-        new_values: newSale,
-        corrected_by: "admin",
-        reason,
+      const { data: newSale, error } = await supabase.rpc("admin_add_sale_correction", {
+        p_shop_id: selectedShop, p_product_id: productId, p_quantity: quantity,
+        p_sold_at: new Date(`${dateFilter}T12:00:00+05:30`).toISOString(), p_reason: reason,
       });
+      if (error) throw error;
       setMessage("Sale added and logged.");
       setEditValues({});
       setReason("");
@@ -145,23 +106,11 @@ export default function CorrectionsPage() {
     if (!amount) { setMessage("Enter a valid amount."); return; }
 
     try {
-      const { data: newPayment } = await supabase.from("payments").insert({
-        shop_id: selectedShop,
-        amount,
-        payment_type: editValues.payment_type || "partial",
-        notes: reason,
-        paid_at: `${dateFilter}T12:00:00`,
-        synced: true,
-      }).select().single();
-
-      await supabase.from("corrections").insert({
-        table_name: "payments",
-        record_id: newPayment?.id,
-        action: "add",
-        new_values: newPayment,
-        corrected_by: "admin",
-        reason,
+      const { data: newPayment, error } = await supabase.rpc("admin_add_payment_correction", {
+        p_shop_id: selectedShop, p_amount: amount, p_payment_type: editValues.payment_type || "partial",
+        p_paid_at: new Date(`${dateFilter}T12:00:00+05:30`).toISOString(), p_reason: reason,
       });
+      if (error) throw error;
       setMessage("Payment added and logged.");
       setEditValues({});
       setReason("");
@@ -175,7 +124,7 @@ export default function CorrectionsPage() {
     <div className="min-h-screen bg-gray-50">
       <div className="bg-white border-b px-6 py-5 shadow-sm">
         <h1 className="text-2xl font-bold text-gray-900">Corrections & Adjustments</h1>
-        <p className="text-sm text-gray-500 mt-1">Edit or delete driver entries. All changes are logged.</p>
+        <p className="text-sm text-gray-500 mt-1">Financial corrections are audited. Existing entries are voided, not directly edited.</p>
       </div>
 
       <div className="px-6 py-4 max-w-5xl mx-auto space-y-4">
