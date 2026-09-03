@@ -1,0 +1,54 @@
+name: Repair outstanding settlement flow
+on:
+  push:
+    branches: [pos-repair]
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: pos-repair
+          fetch-depth: 0
+      - name: Patch settlement to atomic RPC
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/pages/OutstandingPage.tsx')
+          s = p.read_text()
+          old = '''      await supabase.from("outstanding_settlements").insert({
+        shop_id: selectedShop.shop_id,
+        settled_amount: amount,
+        settled_by: "admin",
+        notes: settlementNote || null,
+        settled_at: new Date().toISOString(),
+      });
+
+      await supabase.from("payments").insert({
+        shop_id: selectedShop.shop_id,
+        amount,
+        payment_type: "outstanding",
+        notes: `Settlement: ${settlementNote || "Manual settlement by admin"}`,
+        paid_at: new Date().toISOString(),
+        synced: true,
+      });'''
+          new = '''      const { error } = await supabase.rpc("admin_settle_outstanding", {
+        p_shop_id: selectedShop.shop_id,
+        p_amount: amount,
+        p_note: settlementNote || null,
+        p_paid_at: new Date().toISOString(),
+      });
+      if (error) throw error;'''
+          if old not in s:
+              raise SystemExit('expected settlement block not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          rm .github/workflows/repair-outstanding-settlement.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/pages/OutstandingPage.tsx .github/workflows/repair-outstanding-settlement.yml
+          git commit -m "fix: make outstanding settlement atomic"
+          git push origin pos-repair
