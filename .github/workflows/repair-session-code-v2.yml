@@ -14,15 +14,17 @@ jobs:
         with:
           ref: pos-repair
           fetch-depth: 0
-      - name: Patch SessionsPage
+      - name: Repair SessionsPage
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p = Path('src/pages/SessionsPage.tsx')
           s = p.read_text()
-          broken = '  setTodaySession(sessionForToday); else {\n        // Create pending session for today\n        const created = await insertSession("pending");\n        setTodaySession(created);\n      }'
+          broken = '  setTodaySession(sessionForToday); else {'
           if broken in s:
               s = s.replace(broken, '  setTodaySession(sessionForToday);', 1)
+              tail = '''\n        // Create pending session for today\n        const created = await insertSession("pending");\n        setTodaySession(created);\n      }'''
+              s = s.replace(tail, '', 1)
           if 'const isMissingRelationError' not in s:
               marker = '  async function fetchSessionForDate(date: string) {'
               helper = '''  const isMissingRelationError = (error: any) => {\n    const raw = error?.message || error?.msg || error?.details || error?.hint || error;\n    const message = String(raw || "").toLowerCase();\n    return message.includes("relation") || message.includes("not found") || (error as any)?.status === 404;\n  };\n\n'''
@@ -30,14 +32,15 @@ jobs:
           s = s.replace('.on("postgres_changes", { event: "INSERT", schema: "public", table: t }, handlePayload)', '.on("postgres_changes", { event: "*", schema: "public", table: t }, handlePayload)', 1)
           p.write_text(s)
           PY
-      - name: Build check
+      - name: Build
         run: |
           npm ci --ignore-scripts
           npm run build
-      - name: Commit repaired frontend
+      - name: Commit and push
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add src/pages/SessionsPage.tsx
-          git diff --cached --quiet || git commit -m 'fix: finalize SessionsPage integrity'
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'fix: repair SessionsPage syntax'
           git push origin HEAD:pos-repair
