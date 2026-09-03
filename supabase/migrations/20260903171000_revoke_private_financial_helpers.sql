@@ -1,0 +1,10 @@
+revoke all on function private.admin_add_sale_correction(uuid,uuid,integer,timestamptz,text) from public;
+revoke all on function private.admin_add_payment_correction(uuid,numeric,text,timestamptz,text) from public;
+revoke all on function private.admin_settle_outstanding(uuid,numeric,text,timestamptz) from public;
+revoke all on function private.admin_void_sale(uuid,text) from public;
+revoke all on function private.admin_void_payment(uuid,text) from public;
+revoke all on function private.admin_void_return(uuid,text) from public;
+revoke all on function private.is_admin() from public;
+revoke all on function public.validate_financial_insert() from public;
+revoke all on function public.guard_truck_load_mutation() from public;
+revoke all on function public.prevent_session_reset_after_start() from public;
