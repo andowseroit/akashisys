@@ -1,7 +1,9 @@
 -- Truck loads are owned by a route session. Keep session_date only as a
 -- compatibility/cache column for existing UI, but never trust client input for it.
 
-DROP INDEX IF EXISTS public.truck_loads_session_date_product_id_key;
+ALTER TABLE public.truck_loads
+  DROP CONSTRAINT IF EXISTS truck_loads_session_date_product_id_key;
+
 DROP INDEX IF EXISTS public.idx_truck_loads_date;
 
 CREATE UNIQUE INDEX IF NOT EXISTS truck_loads_session_product_key
