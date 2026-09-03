@@ -1,0 +1,44 @@
+name: Harden corrections page
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch corrections page
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('src/pages/CorrectionsPage.tsx')
+          s=p.read_text()
+          old='''  async function handleDelete(table: string, record: any) {\n    if (!reason.trim()) { setMessage("Please enter a reason before deleting."); return; }\n    if (!confirm(`Delete this ${table} record? This will affect balances.`)) return;\n\n    try {\n      // Log correction\n      await supabase.from("corrections").insert({\n        table_name: table,\n        record_id: record.id,\n        action: "delete",\n        old_values: record,\n        corrected_by: "admin",\n        reason,\n      });\n      // Delete record\n      await supabase.from(table).delete().eq("id", record.id);\n      setMessage(`Deleted successfully and logged.`);\n      setReason("");\n      await loadRecords();\n    } catch (err: any) {\n      setMessage(`Error: ${err.message}`);\n    }\n  }\n\n  async function handleEdit(table: string, record: any) {\n    if (!reason.trim()) { setMessage("Please enter a reason before editing."); return; }\n    try {\n      // Log correction\n      await supabase.from("corrections").insert({\n        table_name: table,\n        record_id: record.id,\n        action: "edit",\n        old_values: record,\n        new_values: editValues,\n        corrected_by: "admin",\n        reason,\n      });\n      // Update record\n      await supabase.from(table).update(editValues).eq("id", record.id);\n      setMessage("Updated successfully and logged.");\n      setEditingRecord(null);\n      setEditValues({});\n      setReason("");\n      await loadRecords();\n    } catch (err: any) {\n      setMessage(`Error: ${err.message}`);\n    }\n  }'''
+          new='''  async function handleDelete(table: string, record: any) {\n    if (!reason.trim()) { setMessage("Please enter a reason before voiding."); return; }\n    if (!confirm(`Void this ${table} record? The action will be recorded in the correction audit.`)) return;\n    const fn = table === "sales" ? "admin_void_sale" : table === "payments" ? "admin_void_payment" : table === "returns" ? "admin_void_return" : null;\n    if (!fn) { setMessage("This record type cannot be corrected here."); return; }\n    try {\n      const { error } = await supabase.rpc(fn, { p_sale_id: record.id, p_payment_id: record.id, p_return_id: record.id, p_reason: reason });\n      if (error) throw error;\n      setMessage(`Voided successfully and logged.`);\n      setReason("");\n      await loadRecords();\n    } catch (err: any) { setMessage(`Error: ${err.message}`); }\n  }\n\n  async function handleEdit(_table: string, _record: any) {\n    setMessage("Direct editing is disabled. Financial records must be voided and re-entered so the audit trail stays intact.");\n    setEditingRecord(null);\n    setEditValues({});\n  }'''
+          if old not in s: raise SystemExit('target correction handlers not found')
+          s=s.replace(old,new)
+          old2='''      const { data: newSale } = await supabase.from("sales").insert({\n        shop_id: selectedShop,\n        product_id: productId,\n        quantity,\n        unit_price: product.price_per_unit,\n        sold_at: `${dateFilter}T12:00:00`,\n        synced: true,\n      }).select().single();\n\n      await supabase.from("corrections").insert({\n        table_name: "sales",\n        record_id: newSale?.id,\n        action: "add",\n        new_values: newSale,\n        corrected_by: "admin",\n        reason,\n      });'''
+          new2='''      const { data: newSale, error } = await supabase.rpc("admin_add_sale_correction", {\n        p_shop_id: selectedShop, p_product_id: productId, p_quantity: quantity,\n        p_sold_at: new Date(`${dateFilter}T12:00:00+05:30`).toISOString(), p_reason: reason,\n      });\n      if (error) throw error;'''
+          if old2 not in s: raise SystemExit('target sale insert not found')
+          s=s.replace(old2,new2)
+          old3='''      const { data: newPayment } = await supabase.from("payments").insert({\n        shop_id: selectedShop,\n        amount,\n        payment_type: editValues.payment_type || "partial",\n        notes: reason,\n        paid_at: `${dateFilter}T12:00:00`,\n        synced: true,\n      }).select().single();\n\n      await supabase.from("corrections").insert({\n        table_name: "payments",\n        record_id: newPayment?.id,\n        action: "add",\n        new_values: newPayment,\n        corrected_by: "admin",\n        reason,\n      });'''
+          new3='''      const { data: newPayment, error } = await supabase.rpc("admin_add_payment_correction", {\n        p_shop_id: selectedShop, p_amount: amount, p_payment_type: editValues.payment_type || "partial",\n        p_paid_at: new Date(`${dateFilter}T12:00:00+05:30`).toISOString(), p_reason: reason,\n      });\n      if (error) throw error;'''
+          if old3 not in s: raise SystemExit('target payment insert not found')
+          s=s.replace(old3,new3)
+          s=s.replace('Edit or delete driver entries. All changes are logged.','Financial corrections are audited. Existing entries are voided, not directly edited.')
+          p.write_text(s)
+          PY
+      - name: Commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/pages/CorrectionsPage.tsx
+          git commit -m "fix: route corrections through audited RPCs" || exit 0
+          git push origin HEAD:pos-repair
+      - name: Remove workflow
+        if: always()
+        run: |
+          git rm .github/workflows/harden-corrections-page.yml || true
+          git commit -m "chore: remove one-shot corrections workflow" || true
+          git push origin HEAD:pos-repair || true
