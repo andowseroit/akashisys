@@ -25,10 +25,10 @@ export default function OutstandingPage() {
       const { data: shops, error: shopsError } = await supabase.from("shops").select("id, name, owner_name, phone, address, is_active, session_active, route_order").order("name");
       if (shopsError) throw shopsError;
       const [{ data: sales, error: salesError }, { data: payments, error: paymentsError }, { data: settlements, error: settlementsError }, { data: returns, error: returnsError }] = await Promise.all([
-        supabase.from("sales").select("shop_id, total_amount, quantity, unit_price, sold_at"),
-        supabase.from("payments").select("shop_id, amount, paid_at, payment_type, notes"),
+        supabase.from("sales").select("shop_id, total_amount, quantity, unit_price, sold_at").is("voided_at", null),
+        supabase.from("payments").select("shop_id, amount, paid_at, payment_type, notes").is("voided_at", null),
         supabase.from("outstanding_settlements").select("shop_id, settled_amount, settled_by, notes, settled_at"),
-        supabase.from("returns").select("shop_id, quantity, unit_price, returned_at"),
+        supabase.from("returns").select("shop_id, quantity, unit_price, returned_at").is("voided_at", null),
       ]);
       if (salesError) throw salesError; if (paymentsError) throw paymentsError; if (settlementsError) throw settlementsError; if (returnsError) throw returnsError;
       const salesByShop = new Map<string, { totalSold: number; totalTransactions: number; lastSaleAt: string | null }>();
@@ -46,10 +46,10 @@ export default function OutstandingPage() {
     setHistoryLoading(true);
     try {
       const [{ data: sales }, { data: payments }, { data: settlements }, { data: returns }] = await Promise.all([
-        supabase.from("sales").select("*, products(name, size_kg)").eq("shop_id", shopId).order("sold_at", { ascending: false }).limit(50),
-        supabase.from("payments").select("*").eq("shop_id", shopId).order("paid_at", { ascending: false }),
+        supabase.from("sales").select("*, products(name, size_kg)").eq("shop_id", shopId).is("voided_at", null).order("sold_at", { ascending: false }).limit(50),
+        supabase.from("payments").select("*").eq("shop_id", shopId).is("voided_at", null).order("paid_at", { ascending: false }),
         supabase.from("outstanding_settlements").select("*").eq("shop_id", shopId).order("settled_at", { ascending: false }),
-        supabase.from("returns").select("*, products(name)").eq("shop_id", shopId).order("returned_at", { ascending: false }),
+        supabase.from("returns").select("*, products(name)").eq("shop_id", shopId).is("voided_at", null).order("returned_at", { ascending: false }),
       ]);
       const timeline: TimelineEntry[] = [
         ...(sales || []).map((s: any) => ({ type: "sale" as const, date: s.sold_at, amount: Number(s.total_amount || 0), detail: `${s.quantity}x ${s.products?.name || "Product"}` })),

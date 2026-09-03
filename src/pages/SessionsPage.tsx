@@ -10,6 +10,7 @@ export default function SessionsPage() {
   const [isUpdating, setIsUpdating] = useState(false);
   const [message, setMessage] = useState("");
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [sessionDetails, setSessionDetails] = useState<any>(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
@@ -118,12 +119,12 @@ useEffect(() => { loadData(); }, []);
         // If the record is for today, refresh today's session and history
         if (recDay === today) {
           loadData().catch(() => {});
-          if (selectedDate === today) loadSessionDetails(today).catch(() => {});
+          if (selectedSessionId) loadSessionDetails(selectedSessionId).catch(() => {});
         }
 
         // If the currently selected detail date matches the record date, refresh details
-        if (selectedDate && recDay === selectedDate) {
-          loadSessionDetails(selectedDate).catch(() => {});
+        if (selectedSessionId && recDay === selectedDate) {
+          loadSessionDetails(selectedSessionId).catch(() => {});
         }
       } catch (e) {
         // ignore
@@ -147,7 +148,7 @@ useEffect(() => { loadData(); }, []);
         subs.forEach((s) => s.unsubscribe && s.unsubscribe());
       } catch (e) {}
     };
-  }, [selectedDate]);
+  }, [selectedDate, selectedSessionId]);
 
   async function loadData() {
     setIsLoading(true);
@@ -340,32 +341,28 @@ useEffect(() => { loadData(); }, []);
       })).filter(cat => cat.products.length > 0)
     : [{ id: "all", name: "All Products", products }];
 
-  async function loadSessionDetails(date: string) {
-    if (!date) return;
+  async function loadSessionDetails(sessionId: string) {
+    if (!sessionId) return;
     setDetailsLoading(true);
-    setSelectedDate(date);
+    setSelectedSessionId(sessionId);
     try {
-      const start = `${date}T00:00:00`;
-      const end = `${date}T23:59:59`;
+      const { data: session, error: sessionError } = await supabase
+        .from("route_sessions")
+        .select("id, session_date")
+        .eq("id", sessionId)
+        .single();
+      if (sessionError) throw sessionError;
+      const date = session.session_date;
 
-      const [{ data: sales }, { data: payments }, { data: expenses }, { data: returns }] =
+      const [{ data: sales, error: salesError }, { data: payments, error: paymentsError }, { data: expenses, error: expensesError }, { data: returns, error: returnsError }] =
         await Promise.all([
-          supabase.from("sales")
-            .select("*, products(name, size_kg), shops(name)")
-            .gte("sold_at", start).lte("sold_at", end)
-            .order("sold_at", { ascending: false }),
-          supabase.from("payments")
-            .select("*, shops(name)")
-            .gte("paid_at", start).lte("paid_at", end)
-            .order("paid_at", { ascending: false }),
-          supabase.from("expenses")
-            .select("*")
-            .gte("spent_at", start).lte("spent_at", end),
-          supabase.from("returns")
-            .select("*, products(name), shops(name)")
-            .gte("returned_at", start).lte("returned_at", end),
+          supabase.from("sales").select("*, products(name, size_kg), shops(name)").eq("session_id", sessionId).is("voided_at", null).order("sold_at", { ascending: false }),
+          supabase.from("payments").select("*, shops(name)").eq("session_id", sessionId).is("voided_at", null).order("paid_at", { ascending: false }),
+          supabase.from("expenses").select("*").eq("session_id", sessionId).is("voided_at", null).order("spent_at", { ascending: false }),
+          supabase.from("returns").select("*, products(name), shops(name)").eq("session_id", sessionId).is("voided_at", null).order("returned_at", { ascending: false }),
         ]);
-
+      const error = salesError || paymentsError || expensesError || returnsError;
+      if (error) throw error;
       setSessionDetails({ date, sales: sales || [], payments: payments || [], expenses: expenses || [], returns: returns || [] });
     } catch (err: any) {
       setMessage("Error loading details: " + err.message);
@@ -405,7 +402,7 @@ useEffect(() => { loadData(); }, []);
       <div className="min-h-screen bg-gray-50">
         <div className="bg-white border-b px-6 py-4 shadow-sm sticky top-0 z-10">
           <button
-            onClick={() => { setSelectedDate(null); setSessionDetails(null); }}
+            onClick={() => { setSelectedDate(null); setSelectedSessionId(null); setSessionDetails(null); }}
             className="text-gray-500 hover:text-gray-900 text-sm mb-2 flex items-center gap-1"
           >
             ← {t("common_back")}
@@ -773,7 +770,7 @@ useEffect(() => { loadData(); }, []);
                         </td>
                         <td className="px-6 py-3 text-right">
                           <button
-                            onClick={() => loadSessionDetails(sessionDate)}
+                            onClick={() => loadSessionDetails(s.id)}
                             className="text-sm font-medium text-gray-900 hover:text-gray-600"
                           >
                             {t("sessions_view")}
