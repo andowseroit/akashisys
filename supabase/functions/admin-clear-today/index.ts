@@ -25,7 +25,6 @@ export default {
 
       if (profileError) {
         console.error("Admin role check failed:", profileError);
-
         return json(
           { error: "Unable to verify administrator access" },
           500
@@ -36,14 +35,32 @@ export default {
         return json({ error: "Admin access required" }, 403);
       }
 
-      // The database function determines CURRENT_DATE itself.
-      // No date supplied by the browser is trusted.
+      // The database function determines the Colombo business date itself.
+      // The authenticated caller ID is passed explicitly so the database can
+      // independently verify both identity and administrator status.
       const { data, error } = await ctx.supabaseAdmin.rpc(
-        "admin_clear_today"
+        "admin_clear_today",
+        { p_admin_id: callerId }
       );
 
       if (error) {
         console.error("admin_clear_today failed:", error);
+
+        // A started/completed route is an expected business-rule rejection,
+        // not a server failure. Preserve the database protection and expose
+        // the correct HTTP status to the frontend.
+        if (
+          error.code === "P0001" &&
+          error.message?.includes("route session has already started")
+        ) {
+          return json(
+            {
+              error:
+                "Cannot clear today's data because a route session has already started or completed.",
+            },
+            409
+          );
+        }
 
         return json(
           { error: "Unable to clear today's data" },
