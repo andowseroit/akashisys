@@ -1,0 +1,83 @@
+name: Repair session frontend
+
+on:
+  push:
+    paths:
+      - '.github/workflows/repair-session-code.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: pos-repair
+          fetch-depth: 0
+
+      - name: Patch SessionsPage
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/pages/SessionsPage.tsx')
+          text = path.read_text()
+
+          old = '''  const today = new Date().toISOString().split("T")[0];\n\n  const normalizeSessionDate = (session: any) => session?.date || session?.session_date;\n  const sessionDateFields = ["session_date", "date"] as const;\n  const sessionOrderFields = ["session_date", "date", "created_at"] as const;'''
+          new = '''  // POS business date is Colombo time, not UTC.\n  const today = new Intl.DateTimeFormat("en-CA", {\n    timeZone: "Asia/Colombo",\n    year: "numeric",\n    month: "2-digit",\n    day: "2-digit",\n  }).format(new Date());\n\n  const normalizeSessionDate = (session: any) => session?.session_date;'''
+          if old not in text:
+              raise SystemExit('Expected date compatibility block not found')
+          text = text.replace(old, new, 1)
+
+          start = text.index('  const isMissingColumnError =')
+          end = text.index('  async function getSessionPayload', start)
+          text = text[:start] + text[end:]
+
+          old = '''  async function getSessionPayload(status: string) {\n    const { data: authData } = await supabase.auth.getUser();\n    const userId = authData?.user?.id || crypto.randomUUID();\n    return {\n      id: crypto.randomUUID(),\n      session_date: today,\n      driver_id: userId,\n      status,\n    };\n  }\n\n  async function detectSessionDateField() {\n    for (const field of sessionDateFields) {\n      const { data, error } = await supabase\n        .from("route_sessions")\n        .select(field)\n        .limit(1);\n\n      if (!error) {\n        setSessionDateField(field);\n        return field;\n      }\n      if (!isMissingColumnError(error)) throw error;\n    }\n\n    return "date";\n  }\n\n  async function getSessionDateField() {\n    if (sessionDateField) return sessionDateField;\n    return await detectSessionDateField();\n  }'''
+          new = '''  async function getCurrentUserId() {\n    const { data, error } = await supabase.auth.getUser();\n    if (error) throw error;\n    if (!data.user?.id) throw new Error("You must be signed in to manage a route session.");\n    return data.user.id;\n  }\n\n  async function getSessionPayload(status: string) {\n    return {\n      id: crypto.randomUUID(),\n      session_date: today,\n      driver_id: await getCurrentUserId(),\n      status,\n    };\n  }'''
+          if old not in text:
+              raise SystemExit('Expected session payload compatibility block not found')
+          text = text.replace(old, new, 1)
+
+          old = '''  async function fetchSessionForDate(date: string) {\n    const field = await getSessionDateField();\n    const fields = field ? [field] : sessionDateFields;\n    for (const fieldCandidate of fields) {\n      const { data, error } = await supabase\n        .from("route_sessions")\n        .select("*")\n        .eq(fieldCandidate, date)\n        .order("id", { ascending: false })\n        .limit(1);\n\n      if (!error) {\n        setSessionDateField(fieldCandidate);\n        return data?.[0] || null;\n      }\n      if (!isMissingColumnError(error)) throw error;\n    }\n\n    return null;\n  }'''
+          new = '''  async function fetchSessionForDate(date: string) {\n    const userId = await getCurrentUserId();\n    const { data, error } = await supabase\n      .from("route_sessions")\n      .select("*")\n      .eq("session_date", date)\n      .eq("driver_id", userId)\n      .order("created_at", { ascending: false })\n      .limit(1);\n\n    if (error) throw error;\n    return data?.[0] || null;\n  }'''
+          if old not in text:
+              raise SystemExit('Expected fetchSessionForDate block not found')
+          text = text.replace(old, new, 1)
+
+          old = '''  async function insertSession(status: string) {\n    const basePayload = await getSessionPayload(status);\n    const field = await getSessionDateField();\n    const existing = await fetchSessionForDate(today);\n    if (existing) return existing;\n\n    const payload: any =\n      field === "date"\n        ? { id: basePayload.id, date: today, driver_id: basePayload.driver_id, status }\n        : basePayload;\n\n    const { data, error } = await supabase\n      .from("route_sessions")\n      .insert(payload)\n      .select()\n      .single();'''
+          new = '''  async function insertSession(status: string) {\n    const basePayload = await getSessionPayload(status);\n    const existing = await fetchSessionForDate(today);\n    if (existing) return existing;\n\n    const { data, error } = await supabase\n      .from("route_sessions")\n      .insert(basePayload)\n      .select()\n      .single();'''
+          if old not in text:
+              raise SystemExit('Expected insertSession block not found')
+          text = text.replace(old, new, 1)
+
+          old = '''      const field = await getSessionDateField();\n      const updateSessions = async (payload: any) => {\n        let result: any = await supabase\n          .from("route_sessions")\n          .update(payload)\n          .eq(field, sessionDate)\n          .select();\n\n        if (result.error && id) {\n          result = await supabase\n            .from("route_sessions")\n            .update(payload)\n            .eq("id", id)\n            .select();\n        }\n\n        return result;\n      };\n\n      let result = await updateSessions(updates);\n      if (result.error && isMissingColumnError(result.error)) {\n        const compatibleUpdates = { ...updates };\n        const message = String(result.error?.message || "").toLowerCase();\n        if (message.includes("started_at")) delete compatibleUpdates.started_at;\n        if (message.includes("completed_at")) delete compatibleUpdates.completed_at;\n\n        result = await updateSessions(compatibleUpdates);\n      }'''
+          new = '''      const result = await supabase\n        .from("route_sessions")\n        .update(updates)\n        .eq("id", id)\n        .select()\n        .single();'''
+          if old not in text:
+              raise SystemExit('Expected session update block not found')
+          text = text.replace(old, new, 1)
+
+          old = '''      // Load existing truck loads for today\n      try {\n        const { data: existingTruckLoads } = await supabase\n          .from("truck_loads")\n          .select("*")\n          .eq("session_date", today);'''
+          new = '''      // Load truck loads through the session identity, never by date alone.\n      try {\n        const { data: existingTruckLoads } = await supabase\n          .from("truck_loads")\n          .select("*")\n          .eq("session_id", todaySession?.id);'''
+          if old in text:
+              text = text.replace(old, new, 1)
+
+          old = '''      // Delete all existing truck loads for today, then re-insert\n      await supabase.from("truck_loads").delete().eq("session_date", today);\n\n      if (entries.length > 0) {\n        const { error } = await supabase.from("truck_loads").insert(entries);\n        if (error) throw error;\n      }'''
+          new = '''      // Replace only this session's loads. Never delete another session's stock.\n      const { data: existing } = await supabase\n        .from("truck_loads")\n        .select("product_id")\n        .eq("session_id", todaySession.id);\n\n      const nextProductIds = new Set(entries.map((entry) => entry.product_id));\n      const removedProductIds = (existing || [])\n        .map((row) => row.product_id)\n        .filter((productId) => !nextProductIds.has(productId));\n\n      if (removedProductIds.length > 0) {\n        const { error } = await supabase\n          .from("truck_loads")\n          .delete()\n          .eq("session_id", todaySession.id)\n          .in("product_id", removedProductIds);\n        if (error) throw error;\n      }\n\n      if (entries.length > 0) {\n        const { error } = await supabase\n          .from("truck_loads")\n          .upsert(entries, { onConflict: "session_id,product_id" });\n        if (error) throw error;\n      }'''
+          if old not in text:
+              raise SystemExit('Expected truck load destructive replacement block not found')
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+      - name: Commit repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/pages/SessionsPage.tsx
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: repair session identity and truck load writes"
+          git push origin HEAD:pos-repair
