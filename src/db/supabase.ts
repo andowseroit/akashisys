@@ -1,3 +1,12 @@
+// Send password reset email
+export async function resetPassword(email: string) {
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${window.location.origin}/reset-password`,
+  });
+
+  if (error) throw error;
+}
+
 /// <reference types="vite/client" />
 
 import { createClient } from "@supabase/supabase-js";
