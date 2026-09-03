@@ -1,12 +1,44 @@
+tsx
 import { useState, useEffect } from "react";
 import { supabase } from "../db/supabase";
 import { useLang } from "../i18n/LanguageContext";
 
-async function invokeAdminDrivers(body: Record<string, unknown>) {
+async function invokeAdminFunction(
+  functionName: string,
+  body: Record<string, unknown>
+) {
+  // Get the current authenticated session.
+  let {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  // If there is no usable session, try refreshing it.
+  if (!session?.access_token) {
+    const {
+      data: { session: refreshedSession },
+      error: refreshError,
+    } = await supabase.auth.refreshSession();
+
+    if (refreshError) {
+      throw refreshError;
+    }
+
+    session = refreshedSession;
+  }
+
+  if (!session?.access_token) {
+    throw new Error(
+      "Your login session has expired. Please sign in again."
+    );
+  }
+
   const { data, error } = await supabase.functions.invoke(
-    "admin-drivers",
+    functionName,
     {
       body,
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+      },
     }
   );
 
@@ -19,6 +51,12 @@ async function invokeAdminDrivers(body: Record<string, unknown>) {
   }
 
   return data;
+}
+
+async function invokeAdminDrivers(
+  body: Record<string, unknown>
+) {
+  return invokeAdminFunction("admin-drivers", body);
 }
 
 export default function SettingsPage() {
@@ -60,6 +98,7 @@ export default function SettingsPage() {
       setDrivers(data || []);
     } catch (err: any) {
       console.error("Failed to load drivers:", err);
+
       setMessage(
         "Error loading drivers: " +
           (err?.message || "Unknown error")
@@ -71,38 +110,41 @@ export default function SettingsPage() {
 
   async function clearTodayData() {
     setClearing(true);
+    setMessage("");
 
     try {
-      const { data, error } = await supabase.functions.invoke(
+      const data = await invokeAdminFunction(
         "admin-clear-today",
- {
- body: {},
- }
- );
+        {}
+      );
 
- if (error) {
- throw error;
- }
+      if (!data?.success) {
+        throw new Error(
+          data?.error ||
+            "Failed to clear today's data."
+        );
+      }
 
- if (!data?.success) {
- throw new Error(
-        data?.error || `Failed to clear today's data.`
- );
- }
+      setMessage(
+        "Today's data has been cleared successfully."
+      );
 
-       setMessage("Today's data has been cleared successfully.");
- } catch (error) {
- console.error("Failed to clear today's data:", error);
+      setShowClearConfirm(false);
+    } catch (error: any) {
+      console.error(
+        "Failed to clear today's data:",
+        error
+      );
 
- setMessage(
-  error instanceof Error
-    ? error.message
-    : "Failed to clear today's data."
-);
- } finally {
- setClearing(false);
- }
- }
+      setMessage(
+        "Error: " +
+          (error?.message ||
+            "Failed to clear today's data.")
+      );
+    } finally {
+      setClearing(false);
+    }
+  }
 
   function openAdd() {
     setEditingDriver(null);
@@ -170,16 +212,17 @@ export default function SettingsPage() {
       // EDIT EXISTING DRIVER
       // =========================================================
       if (editingDriver) {
-        const { error: driverUpdateError } =
-          await supabase
-            .from("driver_accounts")
-            .update({
-              full_name: fullName,
-              email,
-              phone,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", editingDriver.id);
+        const {
+          error: driverUpdateError,
+        } = await supabase
+          .from("driver_accounts")
+          .update({
+            full_name: fullName,
+            email,
+            phone,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", editingDriver.id);
 
         if (driverUpdateError) {
           throw driverUpdateError;
@@ -204,8 +247,7 @@ export default function SettingsPage() {
           }
         } else if (password) {
           // Driver exists in driver_accounts but has no
-          // Supabase Auth account. Create one through the
-          // secure Edge Function.
+          // Supabase Auth account. Create one securely.
           const authResult =
             await invokeAdminDrivers({
               action: "create",
@@ -454,7 +496,7 @@ export default function SettingsPage() {
               onClick={() => setMessage("")}
               className="ml-2 font-bold"
             >
-              Ãƒâ€”
+              ×
             </button>
           </div>
         )}
@@ -482,7 +524,7 @@ export default function SettingsPage() {
                 }}
                 className="text-gray-400 text-xl"
               >
-                Ãƒâ€”
+                ×
               </button>
             </div>
 
@@ -765,3 +807,4 @@ export default function SettingsPage() {
     </div>
   );
 }
+
