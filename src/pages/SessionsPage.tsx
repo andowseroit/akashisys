@@ -48,6 +48,12 @@ export default function SessionsPage() {
     };
   }
 
+  const isMissingRelationError = (error: any) => {
+    const raw = error?.message || error?.msg || error?.details || error?.hint || error;
+    const message = String(raw || "").toLowerCase();
+    return message.includes("relation") || message.includes("not found") || (error as any)?.status === 404;
+  };
+
   async function fetchSessionForDate(date: string) {
     const userId = await getCurrentUserId();
     const { data, error } = await supabase
@@ -128,7 +134,7 @@ useEffect(() => { loadData(); }, []);
       try {
         const ch = supabase
           .channel(`public:${t}`)
-          .on("postgres_changes", { event: "INSERT", schema: "public", table: t }, handlePayload)
+          .on("postgres_changes", { event: "*", schema: "public", table: t }, handlePayload)
           .subscribe();
         subs.push(ch);
       } catch (e) {
@@ -149,11 +155,7 @@ useEffect(() => { loadData(); }, []);
       // Load today's session from route_sessions table
   const existing = await fetchSessionForDate(today);
   const sessionForToday = existing || await insertSession("pending");
-  setTodaySession(sessionForToday); else {
-        // Create pending session for today
-        const created = await insertSession("pending");
-        setTodaySession(created);
-      }
+  setTodaySession(sessionForToday);
 
       // Load all past sessions
       setAllSessions(await fetchAllSessions());
