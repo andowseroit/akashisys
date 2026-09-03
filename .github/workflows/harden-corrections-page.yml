@@ -1,6 +1,7 @@
 name: Harden corrections page
 on:
-  workflow_dispatch:
+  push:
+    branches: [pos-repair]
 permissions:
   contents: write
 jobs:
@@ -15,7 +16,7 @@ jobs:
           p=Path('src/pages/CorrectionsPage.tsx')
           s=p.read_text()
           old='''  async function handleDelete(table: string, record: any) {\n    if (!reason.trim()) { setMessage("Please enter a reason before deleting."); return; }\n    if (!confirm(`Delete this ${table} record? This will affect balances.`)) return;\n\n    try {\n      // Log correction\n      await supabase.from("corrections").insert({\n        table_name: table,\n        record_id: record.id,\n        action: "delete",\n        old_values: record,\n        corrected_by: "admin",\n        reason,\n      });\n      // Delete record\n      await supabase.from(table).delete().eq("id", record.id);\n      setMessage(`Deleted successfully and logged.`);\n      setReason("");\n      await loadRecords();\n    } catch (err: any) {\n      setMessage(`Error: ${err.message}`);\n    }\n  }\n\n  async function handleEdit(table: string, record: any) {\n    if (!reason.trim()) { setMessage("Please enter a reason before editing."); return; }\n    try {\n      // Log correction\n      await supabase.from("corrections").insert({\n        table_name: table,\n        record_id: record.id,\n        action: "edit",\n        old_values: record,\n        new_values: editValues,\n        corrected_by: "admin",\n        reason,\n      });\n      // Update record\n      await supabase.from(table).update(editValues).eq("id", record.id);\n      setMessage("Updated successfully and logged.");\n      setEditingRecord(null);\n      setEditValues({});\n      setReason("");\n      await loadRecords();\n    } catch (err: any) {\n      setMessage(`Error: ${err.message}`);\n    }\n  }'''
-          new='''  async function handleDelete(table: string, record: any) {\n    if (!reason.trim()) { setMessage("Please enter a reason before voiding."); return; }\n    if (!confirm(`Void this ${table} record? The action will be recorded in the correction audit.`)) return;\n    const fn = table === "sales" ? "admin_void_sale" : table === "payments" ? "admin_void_payment" : table === "returns" ? "admin_void_return" : null;\n    if (!fn) { setMessage("This record type cannot be corrected here."); return; }\n    try {\n      const { error } = await supabase.rpc(fn, { p_sale_id: record.id, p_payment_id: record.id, p_return_id: record.id, p_reason: reason });\n      if (error) throw error;\n      setMessage(`Voided successfully and logged.`);\n      setReason("");\n      await loadRecords();\n    } catch (err: any) { setMessage(`Error: ${err.message}`); }\n  }\n\n  async function handleEdit(_table: string, _record: any) {\n    setMessage("Direct editing is disabled. Financial records must be voided and re-entered so the audit trail stays intact.");\n    setEditingRecord(null);\n    setEditValues({});\n  }'''
+          new='''  async function handleDelete(table: string, record: any) {\n    if (!reason.trim()) { setMessage("Please enter a reason before voiding."); return; }\n    if (!confirm(`Void this ${table} record? The action will be recorded in the correction audit.`)) return;\n    try {\n      let error = null;\n      if (table === "sales") ({ error } = await supabase.rpc("admin_void_sale", { p_sale_id: record.id, p_reason: reason }));\n      else if (table === "payments") ({ error } = await supabase.rpc("admin_void_payment", { p_payment_id: record.id, p_reason: reason }));\n      else if (table === "returns") ({ error } = await supabase.rpc("admin_void_return", { p_return_id: record.id, p_reason: reason }));\n      else { setMessage("This record type cannot be corrected here."); return; }\n      if (error) throw error;\n      setMessage(`Voided successfully and logged.`);\n      setReason("");\n      await loadRecords();\n    } catch (err: any) { setMessage(`Error: ${err.message}`); }\n  }\n\n  async function handleEdit(_table: string, _record: any) {\n    setMessage("Direct editing is disabled. Void and re-enter the record so the audit trail remains intact.");\n    setEditingRecord(null);\n    setEditValues({});\n  }'''
           if old not in s: raise SystemExit('target correction handlers not found')
           s=s.replace(old,new)
           old2='''      const { data: newSale } = await supabase.from("sales").insert({\n        shop_id: selectedShop,\n        product_id: productId,\n        quantity,\n        unit_price: product.price_per_unit,\n        sold_at: `${dateFilter}T12:00:00`,\n        synced: true,\n      }).select().single();\n\n      await supabase.from("corrections").insert({\n        table_name: "sales",\n        record_id: newSale?.id,\n        action: "add",\n        new_values: newSale,\n        corrected_by: "admin",\n        reason,\n      });'''
@@ -29,7 +30,7 @@ jobs:
           s=s.replace('Edit or delete driver entries. All changes are logged.','Financial corrections are audited. Existing entries are voided, not directly edited.')
           p.write_text(s)
           PY
-      - name: Commit
+      - name: Commit patch
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
