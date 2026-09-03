@@ -3,6 +3,14 @@ import { supabase } from "../db/supabase";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
+function colomboDate(offsetDays = 0) {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Colombo", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+  const y = Number(parts.find(p => p.type === "year")?.value);
+  const m = Number(parts.find(p => p.type === "month")?.value);
+  const d = Number(parts.find(p => p.type === "day")?.value);
+  return new Date(Date.UTC(y, m - 1, d + offsetDays)).toISOString().slice(0, 10);
+}
+
 export default function ReportsPage() {
   const [period, setPeriod] = useState<"daily" | "weekly" | "monthly">("daily");
   const [reportData, setReportData] = useState<any>(null);
@@ -15,48 +23,33 @@ export default function ReportsPage() {
   async function generateReport() {
     setIsLoading(true);
     try {
-      const now = new Date();
-      let startDate: Date;
-
-      if (period === "daily") {
-        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      } else if (period === "weekly") {
-        const day = now.getDay();
-        startDate = new Date(now);
-        startDate.setDate(now.getDate() - day);
-      } else {
-        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+      const today = colomboDate();
+      let startDate: string;
+      if (period === "daily") startDate = today;
+      else if (period === "weekly") startDate = colomboDate(-6);
+      else {
+        const [y, m] = today.split("-").map(Number);
+        startDate = new Date(Date.UTC(y, m - 1, 1)).toISOString().slice(0, 10);
       }
 
-      const [{ data: sales }, { data: payments }, { data: expenses }, { data: returns }] =
-        await Promise.all([
-          supabase
-            .from("sales")
-            .select("*, shops(name), products(name, size_kg)")
-            .gte("sold_at", startDate.toISOString()),
-          supabase
-            .from("payments")
-            .select("*, shops(name)")
-            .gte("paid_at", startDate.toISOString()),
-          supabase
-            .from("expenses")
-            .select("*")
-            .gte("spent_at", startDate.toISOString()),
-          supabase
-            .from("returns")
-            .select("*, shops(name), products(name)")
-            .gte("returned_at", startDate.toISOString()),
-        ]);
+      const { data: days, error } = await supabase
+        .from("daily_analytics")
+        .select("day,revenue,collected,expenses,return_loss,net_deposit")
+        .gte("day", startDate)
+        .lte("day", today)
+        .order("day", { ascending: true });
+      if (error) throw error;
 
-      const totalRevenue = sales?.reduce((s: number, r: any) => s + (r.total_amount || 0), 0) || 0;
-      const totalCollected = payments?.reduce((s: number, r: any) => s + (r.amount || 0), 0) || 0;
-      const totalExpenses = expenses?.reduce((s: number, r: any) => s + (r.amount || 0), 0) || 0;
-      const totalLosses = returns?.reduce((s: number, r: any) => s + (r.total_loss || 0), 0) || 0;
-      const netDeposit = totalCollected - totalExpenses;
-
-      setReportData({ sales, payments, expenses, returns, totalRevenue, totalCollected, totalExpenses, totalLosses, netDeposit });
+      const rows = days || [];
+      const totalRevenue = rows.reduce((sum, row) => sum + Number(row.revenue || 0), 0);
+      const totalCollected = rows.reduce((sum, row) => sum + Number(row.collected || 0), 0);
+      const totalExpenses = rows.reduce((sum, row) => sum + Number(row.expenses || 0), 0);
+      const totalLosses = rows.reduce((sum, row) => sum + Number(row.return_loss || 0), 0);
+      const netDeposit = rows.reduce((sum, row) => sum + Number(row.net_deposit || 0), 0);
+      setReportData({ totalRevenue, totalCollected, totalExpenses, totalLosses, netDeposit });
     } catch (err) {
       console.error("Failed to generate report:", err);
+      setReportData(null);
       alert("Error generating report");
     } finally {
       setIsLoading(false);
