@@ -90,15 +90,15 @@ export default function SettingsPage() {
  );
  }
 
-       toast.success("Today's data has been cleared successfully.");
+       setMessage("Today's data has been cleared successfully.");
  } catch (error) {
  console.error("Failed to clear today's data:", error);
 
- toast.error(
- error instanceof Error
- ? error.message
- : "Failed to clear today's data."
- );
+ setMessage(
+  error instanceof Error
+    ? error.message
+    : "Failed to clear today's data."
+);
  } finally {
  setClearing(false);
  }
