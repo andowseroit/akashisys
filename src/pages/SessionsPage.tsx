@@ -276,16 +276,22 @@ export default function SessionsPage() {
   }
 
   async function saveTruckLoads() {
-    setSavingTruckLoad(true);
+  if (!todaySession?.id) {
+    setMessage("Error: No active session found.");
+    return;
+  }
+
+  setSavingTruckLoad(true);
     try {
       const entries = Object.entries(truckLoads)
         .filter(([, qty]) => qty > 0)
         .map(([productId, qty]) => ({
-          session_date: today,
-          product_id: productId,
-          quantity_loaded: qty,
-          quantity_returned: 0,
-        }));
+  session_id: todaySession.id,
+  session_date: today,
+  product_id: productId,
+  quantity_loaded: qty,
+  quantity_returned: 0,
+}));
 
       // Delete all existing truck loads for today, then re-insert
       await supabase.from("truck_loads").delete().eq("session_date", today);
