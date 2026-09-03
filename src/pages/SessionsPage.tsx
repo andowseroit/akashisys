@@ -568,7 +568,7 @@ useEffect(() => { loadData(); }, []);
 
             {/* Action buttons */}
             <div className="flex flex-wrap gap-3">
-              {(status === "pending" || status === "completed") && (
+              {(status === "pending") && (
                 <button
                   onClick={() => updateStatus("active")}
                   disabled={isUpdating || (status === "pending" && !hasTruckLoad())}
@@ -608,7 +608,7 @@ useEffect(() => { loadData(); }, []);
                 </button>
               )}
 
-              {status !== "pending" && (
+              {false && (
                 <button
                   onClick={() => setShowResetConfirm(true)}
                   disabled={isUpdating}
