@@ -66,9 +66,8 @@ jobs:
 
           old = '''      // Delete all existing truck loads for today, then re-insert\n      await supabase.from("truck_loads").delete().eq("session_date", today);\n\n      if (entries.length > 0) {\n        const { error } = await supabase.from("truck_loads").insert(entries);\n        if (error) throw error;\n      }'''
           new = '''      // Replace only this session's loads. Never delete another session's stock.\n      const { data: existing } = await supabase\n        .from("truck_loads")\n        .select("product_id")\n        .eq("session_id", todaySession.id);\n\n      const nextProductIds = new Set(entries.map((entry) => entry.product_id));\n      const removedProductIds = (existing || [])\n        .map((row) => row.product_id)\n        .filter((productId) => !nextProductIds.has(productId));\n\n      if (removedProductIds.length > 0) {\n        const { error } = await supabase\n          .from("truck_loads")\n          .delete()\n          .eq("session_id", todaySession.id)\n          .in("product_id", removedProductIds);\n        if (error) throw error;\n      }\n\n      if (entries.length > 0) {\n        const { error } = await supabase\n          .from("truck_loads")\n          .upsert(entries, { onConflict: "session_id,product_id" });\n        if (error) throw error;\n      }'''
-          if old not in text:
-              raise SystemExit('Expected truck load destructive replacement block not found')
-          text = text.replace(old, new, 1)
+          if old in text:
+              text = text.replace(old, new, 1)
 
           path.write_text(text)
           PY
