@@ -23,97 +23,54 @@ export default function SessionsPage() {
   const [truckLoads, setTruckLoads] = useState<Record<string, number>>({});
   const [savingTruckLoad, setSavingTruckLoad] = useState(false);
 
-  const today = new Date().toISOString().split("T")[0];
+  // POS business date is Colombo time, not UTC.
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Colombo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
 
-  const normalizeSessionDate = (session: any) => session?.date || session?.session_date;
-  const sessionDateFields = ["session_date", "date"] as const;
-  const sessionOrderFields = ["session_date", "date", "created_at"] as const;
+  const normalizeSessionDate = (session: any) => session?.session_date;
 
-  const isMissingColumnError = (error: any) => {
-    const raw = error?.message || error?.msg || error?.details || error?.hint || error;
-    const message = String(raw || "").toLowerCase();
-    return (
-      (message.includes("column") && message.includes("does not exist")) ||
-      (message.includes("could not find") && message.includes("schema cache")) ||
-      /could not find.*column/.test(message) ||
-      /column .* does not exist/.test(message)
-    );
-  };
-
-  const isMissingRelationError = (error: any) => {
-    const raw = error?.message || error?.msg || error?.details || error?.hint || error;
-    const message = String(raw || "").toLowerCase();
-    return message.includes("relation") || message.includes("not found") || (error as any)?.status === 404;
-  };
+  async function getCurrentUserId() {
+    const { data, error } = await supabase.auth.getUser();
+    if (error) throw error;
+    if (!data.user?.id) throw new Error("You must be signed in to manage a route session.");
+    return data.user.id;
+  }
 
   async function getSessionPayload(status: string) {
-    const { data: authData } = await supabase.auth.getUser();
-    const userId = authData?.user?.id || crypto.randomUUID();
     return {
       id: crypto.randomUUID(),
       session_date: today,
-      driver_id: userId,
+      driver_id: await getCurrentUserId(),
       status,
     };
   }
 
-  async function detectSessionDateField() {
-    for (const field of sessionDateFields) {
-      const { data, error } = await supabase
-        .from("route_sessions")
-        .select(field)
-        .limit(1);
-
-      if (!error) {
-        setSessionDateField(field);
-        return field;
-      }
-      if (!isMissingColumnError(error)) throw error;
-    }
-
-    return "date";
-  }
-
-  async function getSessionDateField() {
-    if (sessionDateField) return sessionDateField;
-    return await detectSessionDateField();
-  }
-
   async function fetchSessionForDate(date: string) {
-    const field = await getSessionDateField();
-    const fields = field ? [field] : sessionDateFields;
-    for (const fieldCandidate of fields) {
-      const { data, error } = await supabase
-        .from("route_sessions")
-        .select("*")
-        .eq(fieldCandidate, date)
-        .order("id", { ascending: false })
-        .limit(1);
+    const userId = await getCurrentUserId();
+    const { data, error } = await supabase
+      .from("route_sessions")
+      .select("*")
+      .eq("session_date", date)
+      .eq("driver_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(1);
 
-      if (!error) {
-        setSessionDateField(fieldCandidate);
-        return data?.[0] || null;
-      }
-      if (!isMissingColumnError(error)) throw error;
-    }
-
-    return null;
+    if (error) throw error;
+    return data?.[0] || null;
   }
 
   async function insertSession(status: string) {
     const basePayload = await getSessionPayload(status);
-    const field = await getSessionDateField();
     const existing = await fetchSessionForDate(today);
     if (existing) return existing;
 
-    const payload: any =
-      field === "date"
-        ? { id: basePayload.id, date: today, driver_id: basePayload.driver_id, status }
-        : basePayload;
-
     const { data, error } = await supabase
       .from("route_sessions")
-      .insert(payload)
+      .insert(basePayload)
       .select()
       .single();
 
@@ -248,12 +205,12 @@ export default function SessionsPage() {
         console.warn("Failed to load products/categories for truck load:", e);
       }
 
-      // Load existing truck loads for today
+      // Load truck loads through the session identity, never by date alone.
       try {
         const { data: existingTruckLoads } = await supabase
           .from("truck_loads")
           .select("*")
-          .eq("session_date", today);
+          .eq("session_id", todaySession?.id);
         if (existingTruckLoads) {
           const loads: Record<string, number> = {};
           existingTruckLoads.forEach((tl: any) => {
@@ -293,11 +250,30 @@ export default function SessionsPage() {
   quantity_returned: 0,
 }));
 
-      // Delete all existing truck loads for today, then re-insert
-      await supabase.from("truck_loads").delete().eq("session_date", today);
+      // Replace only this session's loads. Never delete another session's stock.
+      const { data: existing } = await supabase
+        .from("truck_loads")
+        .select("product_id")
+        .eq("session_id", todaySession.id);
+
+      const nextProductIds = new Set(entries.map((entry) => entry.product_id));
+      const removedProductIds = (existing || [])
+        .map((row) => row.product_id)
+        .filter((productId) => !nextProductIds.has(productId));
+
+      if (removedProductIds.length > 0) {
+        const { error } = await supabase
+          .from("truck_loads")
+          .delete()
+          .eq("session_id", todaySession.id)
+          .in("product_id", removedProductIds);
+        if (error) throw error;
+      }
 
       if (entries.length > 0) {
-        const { error } = await supabase.from("truck_loads").insert(entries);
+        const { error } = await supabase
+          .from("truck_loads")
+          .upsert(entries, { onConflict: "session_id,product_id" });
         if (error) throw error;
       }
 
@@ -341,34 +317,12 @@ export default function SessionsPage() {
         updates.completed_at = null;
       }
 
-      const field = await getSessionDateField();
-      const updateSessions = async (payload: any) => {
-        let result: any = await supabase
-          .from("route_sessions")
-          .update(payload)
-          .eq(field, sessionDate)
-          .select();
-
-        if (result.error && id) {
-          result = await supabase
-            .from("route_sessions")
-            .update(payload)
-            .eq("id", id)
-            .select();
-        }
-
-        return result;
-      };
-
-      let result = await updateSessions(updates);
-      if (result.error && isMissingColumnError(result.error)) {
-        const compatibleUpdates = { ...updates };
-        const message = String(result.error?.message || "").toLowerCase();
-        if (message.includes("started_at")) delete compatibleUpdates.started_at;
-        if (message.includes("completed_at")) delete compatibleUpdates.completed_at;
-
-        result = await updateSessions(compatibleUpdates);
-      }
+      const result = await supabase
+        .from("route_sessions")
+        .update(updates)
+        .eq("id", id)
+        .select()
+        .single();
 
       const data = Array.isArray(result.data)
         ? [...result.data].sort((a, b) => String(b.id).localeCompare(String(a.id)))[0]
