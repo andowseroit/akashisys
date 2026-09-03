@@ -1,5 +1,5 @@
 create or replace function public.settle_outstanding(p_shop_id uuid, p_amount numeric, p_note text default null)
-returns jsonb
+returns uuid
 language plpgsql
 security invoker
 set search_path = public
