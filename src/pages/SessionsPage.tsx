@@ -266,6 +266,23 @@ useEffect(() => { loadData(); }, []);
   async function updateStatus(newStatus: string) {
     if (!todaySession) return;
 
+    const currentStatus = todaySession.status;
+    if (String(newStatus) === "pending") {
+      setMessage("Reset to pending is not supported from this page.");
+      return;
+    }
+
+    const isReopen = currentStatus === "completed" && newStatus === "active";
+    const isNormalTransition =
+      (currentStatus === "pending" && newStatus === "active") ||
+      (currentStatus === "active" && (newStatus === "paused" || newStatus === "completed")) ||
+      (currentStatus === "paused" && newStatus === "active");
+
+    if (!isReopen && !isNormalTransition) {
+      setMessage("This session transition is not allowed.");
+      return;
+    }
+
     // If starting the route, require truck loads to be saved first
     if (newStatus === "active" && !hasTruckLoad()) {
       setMessage("Please record at least one product loaded into the truck before starting.");
@@ -282,6 +299,21 @@ useEffect(() => { loadData(); }, []);
       const sessionDate = normalizeSessionDate(todaySession) || today;
       const id = todaySession.id;
       const now = new Date().toISOString();
+
+      if (isReopen) {
+        const { error } = await supabase.functions.invoke("admin-reopen-session", {
+          body: { session_id: id },
+        });
+        if (error) throw error;
+
+        const reopened = await fetchSessionForDate(sessionDate);
+        if (!reopened) throw new Error("The reopened session could not be loaded.");
+        setTodaySession(reopened);
+        setAllSessions(await fetchAllSessions());
+        setMessage("Session reopened.");
+        return;
+      }
+
       const updates: any = { status: newStatus };
       if (newStatus === "active" && !todaySession.started_at) {
         updates.started_at = now;
@@ -289,11 +321,6 @@ useEffect(() => { loadData(); }, []);
       if (newStatus === "completed") {
         updates.completed_at = now;
       }
-      if (newStatus === "pending") {
-        updates.started_at = null;
-        updates.completed_at = null;
-      }
-
       const result = await supabase
         .from("route_sessions")
         .update(updates)
@@ -575,6 +602,16 @@ useEffect(() => { loadData(); }, []);
                   className="px-6 py-2.5 bg-green-600 text-white rounded-xl font-semibold text-sm hover:bg-green-700 disabled:opacity-50"
                 >
                   {isUpdating ? "..." : status === "completed" ? t("sessions_reopen") : t("sessions_start")}
+                </button>
+              )}
+
+              {status === "completed" && (
+                <button
+                  onClick={() => updateStatus("active")}
+                  disabled={isUpdating || !hasTruckLoad()}
+                  className="px-6 py-2.5 bg-green-600 text-white rounded-xl font-semibold text-sm hover:bg-green-700 disabled:opacity-50"
+                >
+                  {isUpdating ? "..." : t("sessions_reopen")}
                 </button>
               )}
 
