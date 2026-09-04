@@ -17,7 +17,7 @@ const handleRequest = withSupabase({ auth: "user" }, async (req, ctx) => {
       return json({ error: "Method not allowed" }, 405);
     }
 
-    const callerId = ctx.userClaims?.sub;
+    const callerId = ctx.userClaims?.id;
     if (!callerId || !isValidUuid(callerId)) {
       return json({ error: "Unauthorized" }, 401);
     }
