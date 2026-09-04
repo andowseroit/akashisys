@@ -103,7 +103,7 @@ export default function SettingsPage() {
       if (editingDriver) {
         const { error: driverUpdateError } = await supabase.from("driver_accounts").update({ full_name: fullName, email, phone: phone || null }).eq("id", editingDriver.id);
         if (driverUpdateError) throw driverUpdateError;
-        if (password) await invokeAdminDrivers({ action: "reset_password", user_id: editingDriver.user_id, password });
+        if (password) await invokeAdminDrivers({ action: "update", userId: editingDriver.user_id, password });
         setMessage("Driver updated successfully.");
         setShowForm(false);
         await loadDrivers();
@@ -122,9 +122,9 @@ export default function SettingsPage() {
   }
 
   async function handleDelete(driver: any) {
-    if (!window.confirm(`Delete driver ${driver.full_name}? This will disable their driver account.`)) return;
+    if (!window.confirm(`Disable driver ${driver.full_name}?`)) return;
     try {
-      await invokeAdminDrivers({ action: "disable", user_id: driver.user_id });
+      await invokeAdminDrivers({ action: "toggle", userId: driver.user_id, active: false });
       setMessage("Driver disabled successfully.");
       await loadDrivers();
     } catch (error: any) {
