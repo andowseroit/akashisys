@@ -284,7 +284,7 @@ useEffect(() => { loadData(); }, []);
     }
 
     // If starting the route, require truck loads to be saved first
-    if (newStatus === "active" && !hasTruckLoad()) {
+    if (!isReopen && newStatus === "active" && !hasTruckLoad()) {
       setMessage("Please record at least one product loaded into the truck before starting.");
       return;
     }
@@ -292,7 +292,7 @@ useEffect(() => { loadData(); }, []);
     setIsUpdating(true);
     try {
       // Save truck loads before starting
-      if (newStatus === "active") {
+      if (!isReopen && newStatus === "active") {
         await saveTruckLoadsOnStart();
       }
 
