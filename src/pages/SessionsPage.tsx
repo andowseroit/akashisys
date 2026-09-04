@@ -301,8 +301,20 @@ useEffect(() => { loadData(); }, []);
       const now = new Date().toISOString();
 
       if (isReopen) {
+        let { data: { session } } = await supabase.auth.getSession();
+        if (!session?.access_token) {
+          const { data: { session: refreshedSession }, error: refreshError } =
+            await supabase.auth.refreshSession();
+          if (refreshError) throw refreshError;
+          session = refreshedSession;
+        }
+        if (!session?.access_token) {
+          throw new Error("Your login session has expired. Please sign in again.");
+        }
+        supabase.functions.setAuth(session.access_token);
         const { error } = await supabase.functions.invoke("admin-reopen-session", {
           body: { session_id: id },
+          headers: { Authorization: `Bearer ${session.access_token}` },
         });
         if (error) throw error;
 
