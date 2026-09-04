@@ -292,7 +292,7 @@ useEffect(() => { loadData(); }, []);
     setIsUpdating(true);
     try {
       // Save truck loads before starting
-      if (!isReopen && newStatus === "active") {
+      if (currentStatus === "pending" && newStatus === "active") {
         await saveTruckLoadsOnStart();
       }
 
