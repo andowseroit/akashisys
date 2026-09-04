@@ -3,13 +3,21 @@ import { supabase } from "../db/supabase";
 import { useLang } from "../i18n/LanguageContext";
 
 async function invokeAdminFunction(functionName: string, body: Record<string, unknown>) {
-  let { data: { session } } = await supabase.auth.getSession();
-  if (!session?.access_token) {
+  let { data: { session }, error: sessionError } = await supabase.auth.getSession();
+  if (sessionError) throw sessionError;
+
+  // getSession() can return a still-present session whose access token has
+  // expired. Edge Functions require a currently valid JWT, so refresh before
+  // invoking an authenticated admin function when expiry is imminent.
+  const expiresAt = session?.expires_at ?? 0;
+  if (!session?.access_token || expiresAt <= Math.floor(Date.now() / 1000) + 30) {
     const { data: { session: refreshedSession }, error: refreshError } = await supabase.auth.refreshSession();
     if (refreshError) throw refreshError;
     session = refreshedSession;
   }
+
   if (!session?.access_token) throw new Error("Your login session has expired. Please sign in again.");
+
   const { data, error } = await supabase.functions.invoke(functionName, {
     body,
     headers: { Authorization: `Bearer ${session.access_token}` },
@@ -218,7 +226,7 @@ export default function SettingsPage() {
 
       {showForm && <div className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-50"><div className="bg-white rounded-xl border shadow-xl w-full max-w-lg p-6"><div className="flex items-center justify-between mb-5"><h2 className="text-lg font-semibold text-gray-900">{editingDriver ? "Edit Driver" : "Add Driver"}</h2><button onClick={() => setShowForm(false)} className="text-gray-400 hover:text-gray-700">×</button></div><div className="space-y-4"><label className="block"><span className="text-sm text-gray-700">Full name</span><input value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} className="mt-1 w-full rounded-lg border px-3 py-2" /></label><label className="block"><span className="text-sm text-gray-700">Email</span><input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="mt-1 w-full rounded-lg border px-3 py-2" /></label><label className="block"><span className="text-sm text-gray-700">Phone</span><input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="mt-1 w-full rounded-lg border px-3 py-2" /></label><label className="block"><span className="text-sm text-gray-700">{editingDriver ? "New password (optional)" : "Password"}</span><input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} className="mt-1 w-full rounded-lg border px-3 py-2" /></label></div><div className="flex justify-end gap-2 mt-6"><button onClick={() => setShowForm(false)} className="px-4 py-2 rounded-lg border text-sm hover:bg-gray-50">Cancel</button><button onClick={handleSave} disabled={saving} className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm font-medium disabled:opacity-50">{saving ? "Saving..." : "Save"}</button></div></div></div>}
 
-      {showClearConfirm && <div className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-50"><div className="bg-white rounded-xl border shadow-xl w-full max-w-md p-6"><h2 className="text-lg font-semibold text-gray-900">Clear today's data?</h2><p className="text-sm text-gray-500 mt-2">Existing transactions will be voided and pending truck loads will be removed. This cannot run after the route has started or completed.</p><div className="flex justify-end gap-2 mt-6"><button onClick={() => setShowClearConfirm(false)} disabled={clearing} className="px-4 py-2 rounded-lg border text-sm hover:bg-gray-50 disabled:opacity-50">Cancel</button><button onClick={clearTodayData} disabled={clearing} className="px-4 py-2 rounded-lg bg-red-700 text-white text-sm font-medium disabled:opacity-50">{clearing ? "Clearing..." : "Yes, Clear Today"}</button></div></div></div>}
+      {showClearConfirm && <div className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-50"><div className="bg-black/30 flex items-center justify-center p-4 z-50"><div className="bg-white rounded-xl border shadow-xl w-full max-w-md p-6"><h2 className="text-lg font-semibold text-gray-900">Clear today's data?</h2><p className="text-sm text-gray-500 mt-2">Existing transactions will be voided and pending truck loads will be removed. This cannot run after the route has started or completed.</p><div className="flex justify-end gap-2 mt-6"><button onClick={() => setShowClearConfirm(false)} disabled={clearing} className="px-4 py-2 rounded-lg border text-sm hover:bg-gray-50 disabled:opacity-50">Cancel</button><button onClick={clearTodayData} disabled={clearing} className="px-4 py-2 rounded-lg bg-red-700 text-white text-sm font-medium disabled:opacity-50">{clearing ? "Clearing..." : "Yes, Clear Today"}</button></div></div></div></div>}
     </div>
   );
 }
