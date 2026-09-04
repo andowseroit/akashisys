@@ -10,6 +10,8 @@ async function invokeAdminFunction(functionName: string, body: Record<string, un
     session = refreshedSession;
   }
   if (!session?.access_token) throw new Error("Your login session has expired. Please sign in again.");
+  // Keep the Functions client synchronized with the current user token immediately before the call.
+  supabase.functions.setAuth(session.access_token);
   const { data, error } = await supabase.functions.invoke(functionName, {
     body,
     headers: { Authorization: `Bearer ${session.access_token}` },
