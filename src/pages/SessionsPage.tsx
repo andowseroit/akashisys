@@ -28,6 +28,8 @@ export default function SessionsPage() {
   const [products, setProducts] = useState<any[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [truckLoads, setTruckLoads] = useState<Record<string, number>>({});
+  const [savedTruckLoads, setSavedTruckLoads] = useState<Record<string, number>>({});
+  const [truckLoadCorrectionReason, setTruckLoadCorrectionReason] = useState("");
   const [savingTruckLoad, setSavingTruckLoad] = useState(false);
   const loadRequestId = useRef(0);
 
@@ -130,6 +132,8 @@ useEffect(() => { loadData(); }, []);
     setSelectedSessionId(null);
     setSessionDetails(null);
     setTruckLoads({});
+    setSavedTruckLoads({});
+    setTruckLoadCorrectionReason("");
     setSavingTruckLoad(false);
     setIsUpdating(false);
     setMessage("");
@@ -256,6 +260,7 @@ useEffect(() => { loadData(); }, []);
           loads[tl.product_id] = tl.quantity_loaded || 0;
         });
         setTruckLoads(loads);
+        setSavedTruckLoads(loads);
       } catch (e) {
         // truck_loads table may not exist yet
         console.warn("Failed to load truck loads:", e);
@@ -274,11 +279,56 @@ useEffect(() => { loadData(); }, []);
   async function saveTruckLoads() {
   if (!todaySession?.id) {
     setMessage("Error: No active session found.");
-    return;
+    return false;
+  }
+  if (savingTruckLoad) return false;
+  if (status === "completed") {
+    setMessage("Error: Completed session truck loads are locked.");
+    return false;
   }
 
   setSavingTruckLoad(true);
     try {
+      if (status !== "pending") {
+        const reason = truckLoadCorrectionReason.trim();
+        if (!reason) {
+          setMessage("Error: Enter a correction reason before changing a started route load.");
+          return false;
+        }
+
+        const changedEntries = Object.entries(truckLoads)
+          .filter(([productId, qty]) => qty !== (savedTruckLoads[productId] || 0));
+
+        if (changedEntries.length === 0) {
+          setMessage("No truck load changes to save.");
+          return true;
+        }
+
+        for (const [productId, qty] of changedEntries) {
+          if (!(productId in savedTruckLoads)) {
+            throw new Error("New products cannot be added after the route starts.");
+          }
+          if (!Number.isInteger(qty) || qty <= 0) {
+            throw new Error("Started-route load corrections must keep a positive whole-number quantity.");
+          }
+        }
+
+        for (const [productId, qty] of changedEntries) {
+          const { error } = await supabase.rpc("admin_correct_truck_load", {
+            p_session_id: todaySession.id,
+            p_product_id: productId,
+            p_quantity_loaded: qty,
+            p_reason: reason,
+          });
+          if (error) throw error;
+        }
+
+        setSavedTruckLoads({ ...truckLoads });
+        setTruckLoadCorrectionReason("");
+        setMessage("Truck load correction saved and audited.");
+        return true;
+      }
+
       const entries = Object.entries(truckLoads)
         .filter(([, qty]) => qty > 0)
         .map(([productId, qty]) => ({
@@ -316,10 +366,15 @@ useEffect(() => { loadData(); }, []);
         if (error) throw error;
       }
 
+      const nextLoads = Object.fromEntries(entries.map((entry) => [entry.product_id, entry.quantity_loaded]));
+      setTruckLoads(nextLoads);
+      setSavedTruckLoads(nextLoads);
       setMessage("Truck load saved. You can now start the route.");
+      return true;
     } catch (err: any) {
       console.error("Save truck loads error:", err);
       setMessage("Error saving truck load: " + (err.message || JSON.stringify(err)));
+      return false;
     } finally {
       setSavingTruckLoad(false);
     }
@@ -498,7 +553,8 @@ useEffect(() => { loadData(); }, []);
   async function saveTruckLoadsOnStart() {
     // Save truck loads silently when starting (already validated)
     if (Object.values(truckLoads).some(q => q > 0)) {
-      await saveTruckLoads();
+      const saved = await saveTruckLoads();
+      if (!saved) throw new Error("Truck load could not be saved, so the route was not started.");
     }
   }
 
@@ -506,7 +562,11 @@ useEffect(() => { loadData(); }, []);
     return Object.values(truckLoads).some(q => q > 0);
   }
 
+  const status = todaySession?.status || "pending";
   const totalLoaded = Object.values(truckLoads).reduce((sum, q) => sum + q, 0);
+  const truckLoadChanged = Object.keys({ ...truckLoads, ...savedTruckLoads })
+    .some((productId) => (truckLoads[productId] || 0) !== (savedTruckLoads[productId] || 0));
+  const canEditTruckLoad = status === "pending" || status === "active" || status === "paused";
 
   // Group products by category for truck load display
   const groupedProducts = categories.length > 0
@@ -528,6 +588,7 @@ useEffect(() => { loadData(); }, []);
         .single();
       if (sessionError) throw sessionError;
       const date = session.session_date;
+      setSelectedDate(date);
 
       const [{ data: sales, error: salesError }, { data: payments, error: paymentsError }, { data: expenses, error: expensesError }, { data: returns, error: returnsError }] =
         await Promise.all([
@@ -546,7 +607,6 @@ useEffect(() => { loadData(); }, []);
     }
   }
 
-  const status = todaySession?.status || "pending";
   const includedShops = shops.filter(s => s.session_active !== false).length;
 
   const statusConfig: Record<string, { bg: string; text: string; dot: string; label: string }> = {
@@ -556,6 +616,7 @@ useEffect(() => { loadData(); }, []);
     completed: { bg: "bg-blue-100",   text: "text-blue-800",  dot: "bg-blue-500",  label: "Completed" },
   };
   const sc = statusConfig[status] || statusConfig.pending;
+  const headerStatusLabel = selectedDriverId ? `Today: ${sc.label}` : "Today: Select driver";
 
   if (isLoading) {
     return (
@@ -722,7 +783,7 @@ useEffect(() => { loadData(); }, []);
             </label>
             <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${sc.bg}`}>
               <span className={`w-2 h-2 rounded-full ${sc.dot}`} />
-              <span className={`text-sm font-semibold ${sc.text}`}>Today: {sc.label}</span>
+              <span className={`text-sm font-semibold ${sc.text}`}>{headerStatusLabel}</span>
             </div>
           </div>
         </div>
@@ -858,18 +919,44 @@ useEffect(() => { loadData(); }, []);
                   : "No products recorded yet"}
               </p>
             </div>
-            {status === "pending" && (
+            {selectedDriverId && canEditTruckLoad && (
               <button
                 onClick={saveTruckLoads}
-                disabled={savingTruckLoad}
+                disabled={savingTruckLoad || (status !== "pending" && (!truckLoadChanged || !truckLoadCorrectionReason.trim()))}
                 className="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800 disabled:opacity-50"
               >
-                {savingTruckLoad ? "Saving..." : "Save Load"}
+                {savingTruckLoad ? "Saving..." : status === "pending" ? "Save Load" : "Save Correction"}
               </button>
             )}
           </div>
 
           <div className="px-6 py-4 space-y-4">
+            {selectedDriverId && todaySession && (
+              <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-xs text-gray-600">
+                <span className="font-semibold text-gray-800">Session:</span>{" "}
+                {todaySession.session_date} · {drivers.find((driver) => driver.auth_user_id === selectedDriverId)?.full_name || selectedDriverId}
+                {status !== "pending" && status !== "completed" && (
+                  <span className="block mt-1">
+                    Existing products can be corrected while the route is {status}. New products and zero quantities require a pending route.
+                  </span>
+                )}
+                {status === "completed" && (
+                  <span className="block mt-1">Completed route loads are locked.</span>
+                )}
+              </div>
+            )}
+            {selectedDriverId && status !== "pending" && status !== "completed" && (
+              <label className="block rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                <span className="block text-sm font-medium text-amber-900">Correction reason</span>
+                <input
+                  value={truckLoadCorrectionReason}
+                  onChange={(event) => setTruckLoadCorrectionReason(event.target.value)}
+                  maxLength={500}
+                  placeholder="Example: corrected Rice Flour 1KG from 10 to 8"
+                  className="mt-2 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm text-gray-900"
+                />
+              </label>
+            )}
             {products.length === 0 ? (
               <p className="text-center text-gray-400 text-sm py-4">
                 No active products found. Add products in the Products page first.
@@ -885,6 +972,8 @@ useEffect(() => { loadData(); }, []);
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
                     {cat.products.map((product: any) => {
                       const qty = truckLoads[product.id] || 0;
+                      const savedQty = savedTruckLoads[product.id] || 0;
+                      const changed = qty !== savedQty;
                       const sizeLabel = product.size_kg >= 1
                         ? `${product.size_kg}KG`
                         : `${Math.round(product.size_kg * 1000)}g`;
@@ -893,7 +982,7 @@ useEffect(() => { loadData(); }, []);
                         <div
                           key={product.id}
                           className={`rounded-xl border p-3 flex items-center justify-between ${
-                            qty > 0 ? "border-green-200 bg-green-50" : "border-gray-200 bg-white"
+                            changed ? "border-amber-300 bg-amber-50" : qty > 0 ? "border-green-200 bg-green-50" : "border-gray-200 bg-white"
                           }`}
                         >
                           <div className="min-w-0">
@@ -903,9 +992,9 @@ useEffect(() => { loadData(); }, []);
                               </span>
                               <p className="text-sm font-medium text-gray-900 truncate">{product.name}</p>
                             </div>
-                            {qty > 0 && (
-                              <p className="text-xs text-green-700 font-bold mt-0.5">
-                                {qty} loaded
+                            {(qty > 0 || savedQty > 0) && (
+                              <p className={`text-xs font-bold mt-0.5 ${changed ? "text-amber-700" : "text-green-700"}`}>
+                                Saved {savedQty} · Editing {qty}
                               </p>
                             )}
                           </div>
@@ -916,7 +1005,7 @@ useEffect(() => { loadData(); }, []);
                                 ...prev,
                                 [product.id]: Math.max(0, (prev[product.id] || 0) - 1)
                               }))}
-                              disabled={status !== "pending"}
+                              disabled={!canEditTruckLoad || (status !== "pending" && !(product.id in savedTruckLoads))}
                               className="w-8 h-8 rounded-lg bg-white border border-gray-300 text-gray-600 text-sm hover:bg-gray-100 disabled:opacity-40"
                             >−</button>
                             <span className="w-8 text-center text-sm font-bold text-gray-900">
@@ -927,7 +1016,7 @@ useEffect(() => { loadData(); }, []);
                                 ...prev,
                                 [product.id]: (prev[product.id] || 0) + 1
                               }))}
-                              disabled={status !== "pending"}
+                              disabled={!canEditTruckLoad || (status !== "pending" && !(product.id in savedTruckLoads))}
                               className="w-8 h-8 rounded-lg bg-gray-900 text-white text-sm hover:bg-gray-800 disabled:opacity-40"
                             >+</button>
                           </div>
@@ -954,6 +1043,7 @@ useEffect(() => { loadData(); }, []);
                 <thead className="bg-gray-50">
                   <tr>
                     <th className="text-left px-6 py-3 text-gray-500 font-semibold">{t("sessions_date")}</th>
+                    <th className="text-left px-6 py-3 text-gray-500 font-semibold">Driver</th>
                     <th className="text-left px-6 py-3 text-gray-500 font-semibold">{t("sessions_status")}</th>
                     <th className="text-left px-6 py-3 text-gray-500 font-semibold">{t("sessions_started")}</th>
                     <th className="text-left px-6 py-3 text-gray-500 font-semibold">{t("sessions_ended")}</th>
@@ -972,6 +1062,9 @@ useEffect(() => { loadData(); }, []);
                             weekday: "short", month: "short", day: "numeric", year: "numeric"
                           })}
                           {isToday && <span className="ml-2 text-xs text-green-600 font-medium">{t("common_today_badge")}</span>}
+                        </td>
+                        <td className="px-6 py-3 text-gray-600">
+                          {drivers.find((driver) => driver.auth_user_id === s.driver_id)?.full_name || s.driver_id}
                         </td>
                         <td className="px-6 py-3">
                           <span className={`px-2 py-1 rounded-full text-xs font-semibold ${cfg.bg} ${cfg.text}`}>

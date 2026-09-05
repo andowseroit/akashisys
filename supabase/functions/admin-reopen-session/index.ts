@@ -56,8 +56,8 @@ const handleRequest = withSupabase({ auth: "user" }, async (req, ctx) => {
       return json({ error: "A valid session_id is required" }, 400);
     }
 
-    if (targetStatus !== "active" && targetStatus !== "pending") {
-      return json({ error: "target_status must be active or pending" }, 400);
+    if (targetStatus !== "active") {
+      return json({ error: "target_status must be active" }, 400);
     }
 
     // The privileged RPC is callable only by the server-side service role.
