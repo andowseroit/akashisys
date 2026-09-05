@@ -25,6 +25,10 @@ async function invokeAdminDrivers(body: Record<string, unknown>) {
   return invokeAdminFunction("admin-drivers", body);
 }
 
+function getDriverAuthUserId(driver: any) {
+  return driver?.auth_user_id || driver?.user_id || "";
+}
+
 export default function SettingsPage() {
   const { t } = useLang();
   const [drivers, setDrivers] = useState<any[]>([]);
@@ -101,9 +105,14 @@ export default function SettingsPage() {
     setMessage("");
     try {
       if (editingDriver) {
-        const { error: driverUpdateError } = await supabase.from("driver_accounts").update({ full_name: fullName, email, phone: phone || null }).eq("id", editingDriver.id);
-        if (driverUpdateError) throw driverUpdateError;
-        if (password) await invokeAdminDrivers({ action: "update", userId: editingDriver.user_id, password });
+        await invokeAdminDrivers({
+          action: "update",
+          userId: getDriverAuthUserId(editingDriver),
+          full_name: fullName,
+          email,
+          phone: phone || null,
+          password: password || undefined,
+        });
         setMessage("Driver updated successfully.");
         setShowForm(false);
         await loadDrivers();
@@ -124,7 +133,7 @@ export default function SettingsPage() {
   async function handleDelete(driver: any) {
     if (!window.confirm(`Disable driver ${driver.full_name}?`)) return;
     try {
-      await invokeAdminDrivers({ action: "toggle", userId: driver.user_id, active: false });
+      await invokeAdminDrivers({ action: "toggle", userId: getDriverAuthUserId(driver), active: false });
       setMessage("Driver disabled successfully.");
       await loadDrivers();
     } catch (error: any) {
