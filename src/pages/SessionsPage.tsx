@@ -76,6 +76,18 @@ export default function SessionsPage() {
     return data?.[0] || null;
   }
 
+  async function fetchSessionById(sessionId: string, driverId: string) {
+    const { data, error } = await supabase
+      .from("route_sessions")
+      .select("*")
+      .eq("id", sessionId)
+      .eq("driver_id", driverId)
+      .single();
+
+    if (error) throw error;
+    return data;
+  }
+
   async function insertSession(status: string, driverId: string) {
     const basePayload = await getSessionPayload(status, driverId);
     const existing = await fetchSessionForDate(today, driverId);
@@ -136,8 +148,8 @@ useEffect(() => { loadData(); }, []);
         const recDay = recDate ? recDate.split?.("T")?.[0] || new Date(recDate).toISOString().split("T")[0] : null;
 
         // If the record is for today, refresh today's session and history
-        if (recDay === today) {
-          loadData().catch(() => {});
+        if (recDay === today && selectedDriverId && (!newRec.driver_id || newRec.driver_id === selectedDriverId)) {
+          loadData(selectedDriverId).catch(() => {});
           if (selectedSessionId) loadSessionDetails(selectedSessionId).catch(() => {});
         }
 
@@ -167,7 +179,7 @@ useEffect(() => { loadData(); }, []);
         subs.forEach((s) => s.unsubscribe && s.unsubscribe());
       } catch (e) {}
     };
-  }, [selectedDate, selectedSessionId]);
+  }, [selectedDate, selectedSessionId, selectedDriverId]);
 
   async function loadData(driverIdOverride?: string | null) {
     const requestId = ++loadRequestId.current;
@@ -314,9 +326,31 @@ useEffect(() => { loadData(); }, []);
   }
 
   async function updateStatus(newStatus: string) {
-    if (!todaySession) return;
+    if (!todaySession || !selectedDriverId) {
+      setMessage("Error: Select a driver and load that driver's route session first.");
+      return;
+    }
 
-    const currentStatus = todaySession.status;
+    const selectedSessionId = todaySession.id;
+    if (!selectedSessionId) {
+      setMessage("Error: The selected driver's route session has no ID.");
+      return;
+    }
+
+    let authoritativeSession: any;
+    try {
+      authoritativeSession = await fetchSessionById(selectedSessionId, selectedDriverId);
+    } catch (error: any) {
+      setMessage("Error: The selected driver's route session could not be reloaded: " + (error?.message || String(error)));
+      return;
+    }
+
+    if (authoritativeSession.id !== selectedSessionId || authoritativeSession.driver_id !== selectedDriverId) {
+      setMessage("Error: The selected route session no longer belongs to the selected driver.");
+      return;
+    }
+
+    const currentStatus = authoritativeSession.status;
     if (String(newStatus) === "pending") {
       setMessage("Reset to pending is not supported from this page.");
       return;
@@ -346,8 +380,8 @@ useEffect(() => { loadData(); }, []);
         await saveTruckLoadsOnStart();
       }
 
-      const sessionDate = normalizeSessionDate(todaySession) || today;
-      const id = todaySession.id;
+      const sessionDate = normalizeSessionDate(authoritativeSession) || today;
+      const id = authoritativeSession.id;
       const now = new Date().toISOString();
 
       if (isReopen) {
@@ -369,30 +403,42 @@ useEffect(() => { loadData(); }, []);
         if (error) throw error;
 
         if (!selectedDriverId) throw new Error("Select a driver before reopening a route session.");
-        const reopened = await fetchSessionForDate(sessionDate, selectedDriverId);
-        if (!reopened) throw new Error("The reopened session could not be loaded.");
+        const reopened = await fetchSessionById(id, selectedDriverId);
+        if (reopened.id !== id || reopened.driver_id !== selectedDriverId || reopened.status !== "active") {
+          throw new Error("The reopened session did not remain assigned to the selected driver.");
+        }
         setTodaySession(reopened);
         setAllSessions(await fetchAllSessions());
         setMessage("Session reopened.");
         return;
       }
 
-      const updates: any = { status: newStatus };
-      const adminId = await getCurrentUserId();
-      if (newStatus === "active" && !todaySession.started_at) {
-        updates.started_at = now;
-        updates.started_by = adminId;
-      }
       if (newStatus === "completed") {
-        updates.completed_at = now;
-        updates.stopped_by = adminId;
+        const { error: completionError } = await supabase.rpc("admin_complete_route_session", {
+          p_session_id: id,
+          p_driver_id: selectedDriverId,
+        });
+        if (completionError) throw completionError;
       }
-      const result = await supabase
-        .from("route_sessions")
-        .update(updates)
-        .eq("id", id)
-        .select()
-        .single();
+
+      let result: { data: any; error: any };
+      if (newStatus === "completed") {
+        result = { data: await fetchSessionById(id, selectedDriverId), error: null };
+      } else {
+        const updates: any = { status: newStatus };
+        const adminId = await getCurrentUserId();
+        if (newStatus === "active" && !authoritativeSession.started_at) {
+          updates.started_at = now;
+          updates.started_by = adminId;
+        }
+        result = await supabase
+          .from("route_sessions")
+          .update(updates)
+          .eq("id", id)
+          .eq("driver_id", selectedDriverId)
+          .select()
+          .single();
+      }
 
       const data = Array.isArray(result.data)
         ? [...result.data].sort((a, b) => String(b.id).localeCompare(String(a.id)))[0]
@@ -400,7 +446,15 @@ useEffect(() => { loadData(); }, []);
       const error = result.error;
 
       if (error) throw error;
-      setTodaySession(data);
+      if (!data || data.id !== id || data.driver_id !== selectedDriverId || data.status !== newStatus || (newStatus === "completed" && !data.completed_at)) {
+        throw new Error("The route session transition response did not match the selected session.");
+      }
+
+      const refreshed = await fetchSessionById(id, selectedDriverId);
+      if (refreshed.id !== id || refreshed.driver_id !== selectedDriverId || refreshed.status !== newStatus || (newStatus === "completed" && !refreshed.completed_at)) {
+        throw new Error("The route session could not be verified after the transition.");
+      }
+      setTodaySession(refreshed);
 
       // Refresh history
       setAllSessions(await fetchAllSessions());
