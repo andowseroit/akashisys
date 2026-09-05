@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { supabase } from "../db/supabase";
 import { useLang } from "../i18n/LanguageContext";
 
@@ -15,13 +15,21 @@ export default function SessionsPage() {
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [showReassignConfirm, setShowReassignConfirm] = useState(false);
+  const [reassignmentSession, setReassignmentSession] = useState<any>(null);
+  const [reassignmentTargetDriverId, setReassignmentTargetDriverId] = useState("");
+  const [reassignmentReason, setReassignmentReason] = useState("");
+  const [isReassigning, setIsReassigning] = useState(false);
   const [shops, setShops] = useState<any[]>([]);
+  const [drivers, setDrivers] = useState<any[]>([]);
+  const [selectedDriverId, setSelectedDriverId] = useState<string | null>(null);
 
   // Truck load state
   const [products, setProducts] = useState<any[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [truckLoads, setTruckLoads] = useState<Record<string, number>>({});
   const [savingTruckLoad, setSavingTruckLoad] = useState(false);
+  const loadRequestId = useRef(0);
 
   // POS business date is Colombo time, not UTC.
   const today = new Intl.DateTimeFormat("en-CA", {
@@ -40,11 +48,11 @@ export default function SessionsPage() {
     return data.user.id;
   }
 
-  async function getSessionPayload(status: string) {
+  async function getSessionPayload(status: string, driverId: string) {
     return {
       id: crypto.randomUUID(),
       session_date: today,
-      driver_id: await getCurrentUserId(),
+      driver_id: driverId,
       status,
     };
   }
@@ -55,13 +63,12 @@ export default function SessionsPage() {
     return message.includes("relation") || message.includes("not found") || (error as any)?.status === 404;
   };
 
-  async function fetchSessionForDate(date: string) {
-    const userId = await getCurrentUserId();
+  async function fetchSessionForDate(date: string, driverId: string) {
     const { data, error } = await supabase
       .from("route_sessions")
       .select("*")
       .eq("session_date", date)
-      .eq("driver_id", userId)
+      .eq("driver_id", driverId)
       .order("created_at", { ascending: false })
       .limit(1);
 
@@ -69,9 +76,9 @@ export default function SessionsPage() {
     return data?.[0] || null;
   }
 
-  async function insertSession(status: string) {
-    const basePayload = await getSessionPayload(status);
-    const existing = await fetchSessionForDate(today);
+  async function insertSession(status: string, driverId: string) {
+    const basePayload = await getSessionPayload(status, driverId);
+    const existing = await fetchSessionForDate(today, driverId);
     if (existing) return existing;
 
     const { data, error } = await supabase
@@ -85,7 +92,7 @@ export default function SessionsPage() {
     const message = String(error?.message || "").toLowerCase();
     const isDuplicate = (error as any)?.code === "23505" || message.includes("duplicate key");
     if (isDuplicate) {
-      const existingAfterConflict = await fetchSessionForDate(today);
+      const existingAfterConflict = await fetchSessionForDate(today, driverId);
       if (existingAfterConflict) return existingAfterConflict;
     }
 
@@ -103,6 +110,18 @@ export default function SessionsPage() {
 }
 
 useEffect(() => { loadData(); }, []);
+
+  function resetDriverSessionState() {
+    loadRequestId.current += 1;
+    setTodaySession(null);
+    setSelectedDate(null);
+    setSelectedSessionId(null);
+    setSessionDetails(null);
+    setTruckLoads({});
+    setSavingTruckLoad(false);
+    setIsUpdating(false);
+    setMessage("");
+  }
 
   // Realtime subscriptions: refresh when new records arrive
   useEffect(() => {
@@ -150,16 +169,41 @@ useEffect(() => { loadData(); }, []);
     };
   }, [selectedDate, selectedSessionId]);
 
-  async function loadData() {
+  async function loadData(driverIdOverride?: string | null) {
+    const requestId = ++loadRequestId.current;
+    const isCurrentRequest = () => requestId === loadRequestId.current;
     setIsLoading(true);
     try {
+      const { data: driverData, error: driverError } = await supabase
+        .from("driver_accounts")
+        .select("id, full_name, auth_user_id, is_active")
+        .eq("is_active", true)
+        .not("auth_user_id", "is", null)
+        .order("full_name");
+      if (driverError) throw driverError;
+      if (!isCurrentRequest()) return;
+
+      const availableDrivers = driverData || [];
+      setDrivers(availableDrivers);
+      const driverId = driverIdOverride !== undefined
+        ? driverIdOverride
+        : selectedDriverId && availableDrivers.some((driver) => driver.auth_user_id === selectedDriverId)
+          ? selectedDriverId
+          : availableDrivers.length === 1
+            ? availableDrivers[0].auth_user_id
+            : null;
+      setSelectedDriverId(driverId);
+
       // Load today's session from route_sessions table
-  const existing = await fetchSessionForDate(today);
-  const sessionForToday = existing || await insertSession("pending");
-  setTodaySession(sessionForToday);
+      const existing = driverId ? await fetchSessionForDate(today, driverId) : null;
+      const sessionForToday = driverId ? existing || await insertSession("pending", driverId) : null;
+      if (!isCurrentRequest()) return;
+      setTodaySession(sessionForToday);
 
       // Load all past sessions
-      setAllSessions(await fetchAllSessions());
+      const sessions = await fetchAllSessions();
+      if (!isCurrentRequest()) return;
+      setAllSessions(sessions);
 
       // Load shops for route coverage
       const { data: shopsData, error: shopsError } = await supabase
@@ -168,6 +212,7 @@ useEffect(() => { loadData(); }, []);
         .eq("is_active", true)
         .order("route_order");
       if (shopsError && !isMissingRelationError(shopsError)) throw shopsError;
+      if (!isCurrentRequest()) return;
       setShops(shopsData || []);
 
       // Load products and categories for truck load
@@ -176,6 +221,7 @@ useEffect(() => { loadData(); }, []);
           supabase.from("product_categories").select("*").eq("is_active", true).order("sort_order"),
           supabase.from("products").select("*").eq("is_active", true).order("name"),
         ]);
+        if (!isCurrentRequest()) return;
         setCategories(cats || []);
         setProducts(prods || []);
       } catch (e) {
@@ -183,29 +229,33 @@ useEffect(() => { loadData(); }, []);
       }
 
       // Load truck loads through the session identity, never by date alone.
+      if (!isCurrentRequest()) return;
+      setTruckLoads({});
       try {
-        const { data: existingTruckLoads } = await supabase
-          .from("truck_loads")
-          .select("*")
-          .eq("session_id", sessionForToday.id);
-        if (existingTruckLoads) {
-          const loads: Record<string, number> = {};
-          existingTruckLoads.forEach((tl: any) => {
-            loads[tl.product_id] = tl.quantity_loaded || 0;
-          });
-          setTruckLoads(loads);
-        }
+        const { data: existingTruckLoads } = sessionForToday
+          ? await supabase
+            .from("truck_loads")
+            .select("*")
+            .eq("session_id", sessionForToday.id)
+          : { data: [] };
+        if (!isCurrentRequest()) return;
+        const loads: Record<string, number> = {};
+        (existingTruckLoads || []).forEach((tl: any) => {
+          loads[tl.product_id] = tl.quantity_loaded || 0;
+        });
+        setTruckLoads(loads);
       } catch (e) {
         // truck_loads table may not exist yet
         console.warn("Failed to load truck loads:", e);
       }
 
     } catch (err: any) {
+      if (!isCurrentRequest()) return;
       console.error("Failed to load sessions:", err);
       const message = err?.message || err?.msg || err?.details || JSON.stringify(err) || String(err);
       setMessage("Error loading sessions: " + message);
     } finally {
-      setIsLoading(false);
+      if (isCurrentRequest()) setIsLoading(false);
     }
   }
 
@@ -318,7 +368,8 @@ useEffect(() => { loadData(); }, []);
         });
         if (error) throw error;
 
-        const reopened = await fetchSessionForDate(sessionDate);
+        if (!selectedDriverId) throw new Error("Select a driver before reopening a route session.");
+        const reopened = await fetchSessionForDate(sessionDate, selectedDriverId);
         if (!reopened) throw new Error("The reopened session could not be loaded.");
         setTodaySession(reopened);
         setAllSessions(await fetchAllSessions());
@@ -327,11 +378,14 @@ useEffect(() => { loadData(); }, []);
       }
 
       const updates: any = { status: newStatus };
+      const adminId = await getCurrentUserId();
       if (newStatus === "active" && !todaySession.started_at) {
         updates.started_at = now;
+        updates.started_by = adminId;
       }
       if (newStatus === "completed") {
         updates.completed_at = now;
+        updates.stopped_by = adminId;
       }
       const result = await supabase
         .from("route_sessions")
@@ -356,6 +410,34 @@ useEffect(() => { loadData(); }, []);
       setMessage("Error: " + err.message);
     } finally {
       setIsUpdating(false);
+    }
+  }
+
+  async function reassignSession() {
+    if (!reassignmentSession || !reassignmentTargetDriverId || !reassignmentReason.trim()) {
+      setMessage("Error: Select an active driver and provide a reason for the reassignment.");
+      return;
+    }
+
+    setIsReassigning(true);
+    try {
+      const { error } = await supabase.rpc("admin_reassign_route_session", {
+        p_session_id: reassignmentSession.id,
+        p_target_driver_id: reassignmentTargetDriverId,
+        p_reason: reassignmentReason.trim(),
+      });
+      if (error) throw error;
+
+      setShowReassignConfirm(false);
+      setReassignmentSession(null);
+      setReassignmentTargetDriverId("");
+      setReassignmentReason("");
+      await loadData(selectedDriverId);
+      setMessage("Route session reassigned and audited successfully.");
+    } catch (err: any) {
+      setMessage("Error reassigning route session: " + (err?.message || String(err)));
+    } finally {
+      setIsReassigning(false);
     }
   }
 
@@ -561,9 +643,33 @@ useEffect(() => { loadData(); }, []);
               {new Date().toLocaleDateString("en-US", { dateStyle: "full" })}
             </p>
           </div>
-          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${sc.bg}`}>
-            <span className={`w-2 h-2 rounded-full ${sc.dot}`} />
-            <span className={`text-sm font-semibold ${sc.text}`}>Today: {sc.label}</span>
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-2 text-sm text-gray-600">
+              <span>Driver</span>
+              <select
+                value={selectedDriverId || ""}
+                onChange={(event) => {
+                  const driverId = event.target.value || null;
+                  resetDriverSessionState();
+                  setSelectedDriverId(driverId);
+                  loadData(driverId).catch((error) => {
+                    setMessage("Error loading driver session: " + (error?.message || String(error)));
+                  });
+                }}
+                className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+              >
+                <option value="">Select driver</option>
+                {drivers.map((driver) => (
+                  <option key={driver.auth_user_id} value={driver.auth_user_id}>
+                    {driver.full_name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${sc.bg}`}>
+              <span className={`w-2 h-2 rounded-full ${sc.dot}`} />
+              <span className={`text-sm font-semibold ${sc.text}`}>Today: {sc.label}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -607,7 +713,7 @@ useEffect(() => { loadData(); }, []);
 
             {/* Action buttons */}
             <div className="flex flex-wrap gap-3">
-              {(status === "pending") && (
+              {todaySession && (status === "pending") && (
                 <button
                   onClick={() => updateStatus("active")}
                   disabled={isUpdating || (status === "pending" && !hasTruckLoad())}
@@ -617,7 +723,7 @@ useEffect(() => { loadData(); }, []);
                 </button>
               )}
 
-              {status === "completed" && (
+              {todaySession && status === "completed" && (
                 <button
                   onClick={() => updateStatus("active")}
                   disabled={isUpdating || !hasTruckLoad()}
@@ -627,7 +733,7 @@ useEffect(() => { loadData(); }, []);
                 </button>
               )}
 
-              {status === "active" && (
+              {todaySession && status === "active" && (
                 <button
                   onClick={() => updateStatus("paused")}
                   disabled={isUpdating}
@@ -637,7 +743,7 @@ useEffect(() => { loadData(); }, []);
                 </button>
               )}
 
-              {status === "paused" && (
+              {todaySession && status === "paused" && (
                 <button
                   onClick={() => updateStatus("active")}
                   disabled={isUpdating}
@@ -647,7 +753,7 @@ useEffect(() => { loadData(); }, []);
                 </button>
               )}
 
-              {(status === "active" || status === "paused") && (
+              {todaySession && (status === "active" || status === "paused") && (
                 <button
                   onClick={() => setShowEndConfirm(true)}
                   disabled={isUpdating}
@@ -669,7 +775,14 @@ useEffect(() => { loadData(); }, []);
             </div>
 
             {/* Truck load hint when pending */}
-            {status === "pending" && !hasTruckLoad() && (
+            {!selectedDriverId ? (
+              <div className="rounded-xl bg-blue-50 border border-blue-200 px-4 py-3">
+                <p className="text-sm font-medium text-blue-800">Select a driver</p>
+                <p className="text-xs text-blue-700 mt-0.5">
+                  Choose the driver who will execute this route before creating or managing today&apos;s session.
+                </p>
+              </div>
+            ) : status === "pending" && !hasTruckLoad() && (
               <div className="rounded-xl bg-amber-50 border border-amber-200 px-4 py-3">
                 <p className="text-sm font-medium text-amber-800">Truck Load Required</p>
                 <p className="text-xs text-amber-700 mt-0.5">
@@ -818,12 +931,25 @@ useEffect(() => { loadData(); }, []);
                           {s.completed_at ? new Date(s.completed_at).toLocaleTimeString() : "—"}
                         </td>
                         <td className="px-6 py-3 text-right">
-                          <button
-                            onClick={() => loadSessionDetails(s.id)}
-                            className="text-sm font-medium text-gray-900 hover:text-gray-600"
-                          >
-                            {t("sessions_view")}
-                          </button>
+                          <div className="flex justify-end items-center gap-3">
+                            <button
+                              onClick={() => loadSessionDetails(s.id)}
+                              className="text-sm font-medium text-gray-900 hover:text-gray-600"
+                            >
+                              {t("sessions_view")}
+                            </button>
+                            <button
+                              onClick={() => {
+                                setReassignmentSession(s);
+                                setReassignmentTargetDriverId("");
+                                setReassignmentReason("");
+                                setShowReassignConfirm(true);
+                              }}
+                              className="text-sm font-medium text-amber-700 hover:text-amber-900"
+                            >
+                              Reassign driver
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -874,6 +1000,65 @@ useEffect(() => { loadData(); }, []);
                 onClick={() => { setShowResetConfirm(false); updateStatus("pending"); }}
                 className="px-4 py-2 bg-gray-800 text-white rounded-xl text-sm font-semibold hover:bg-gray-900"
               >{t("sessions_reset")}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showReassignConfirm && reassignmentSession && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-xl">
+            <h3 className="text-xl font-bold text-gray-900 mb-2">Reassign driver</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              This changes ownership of the selected route session. Financial and operational records remain attached to the same session.
+            </p>
+            <div className="space-y-3">
+              <div className="text-sm">
+                <span className="font-semibold text-gray-700">Current driver: </span>
+                {drivers.find((driver) => driver.auth_user_id === reassignmentSession.driver_id)?.full_name || reassignmentSession.driver_id}
+              </div>
+              <label className="block text-sm font-medium text-gray-700">
+                Target active driver
+                <select
+                  value={reassignmentTargetDriverId}
+                  onChange={(event) => setReassignmentTargetDriverId(event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2"
+                >
+                  <option value="">Select driver</option>
+                  {drivers
+                    .filter((driver) => driver.auth_user_id !== reassignmentSession.driver_id)
+                    .map((driver) => (
+                      <option key={driver.auth_user_id} value={driver.auth_user_id}>
+                        {driver.full_name}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label className="block text-sm font-medium text-gray-700">
+                Reason
+                <textarea
+                  value={reassignmentReason}
+                  onChange={(event) => setReassignmentReason(event.target.value)}
+                  rows={3}
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2"
+                  placeholder="Explain why ownership must change"
+                />
+              </label>
+              <p className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+                Explicit confirmation is required. The reassignment is recorded in the corrections audit table.
+              </p>
+            </div>
+            <div className="flex gap-3 justify-end mt-5">
+              <button
+                onClick={() => setShowReassignConfirm(false)}
+                disabled={isReassigning}
+                className="px-4 py-2 border rounded-xl text-sm hover:bg-gray-50 disabled:opacity-50"
+              >Cancel</button>
+              <button
+                onClick={reassignSession}
+                disabled={isReassigning || !reassignmentTargetDriverId || !reassignmentReason.trim()}
+                className="px-4 py-2 bg-amber-600 text-white rounded-xl text-sm font-semibold hover:bg-amber-700 disabled:opacity-50"
+              >{isReassigning ? "Reassigning..." : "Confirm reassignment"}</button>
             </div>
           </div>
         </div>
