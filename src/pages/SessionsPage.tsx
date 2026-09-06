@@ -314,7 +314,7 @@ useEffect(() => { loadData(); }, []);
         }
 
         for (const [productId, qty] of changedEntries) {
-          const { error } = await supabase.rpc("admin_correct_truck_load", {
+          const { error } = await supabase.rpc("admin_correct_truck_load_v2", {
             p_session_id: todaySession.id,
             p_product_id: productId,
             p_quantity_loaded: qty,

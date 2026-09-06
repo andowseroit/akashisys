@@ -1,7 +1,7 @@
 BEGIN;
 
 -- ============================================================
--- 1. Add the new correction/audit action types
+-- 1. Allow the audited truck-load correction action.
 -- ============================================================
 
 ALTER TABLE public.corrections
@@ -25,18 +25,12 @@ ALTER TABLE public.corrections
 
 
 -- ============================================================
--- 2. Harden route-session lifecycle protection
+-- 2. Harden route-session lifecycle.
 --
--- Allowed lifecycle:
---   pending -> active
---   active  -> paused
---   paused  -> active
---   active/paused -> completed
---   completed -> active ONLY through the controlled
---                  admin reopen RPC
+-- Existing production admin_reopen_route_session() is NOT
+-- modified because it is owned by route_session_admin.
 --
--- IMPORTANT:
--- Reopening preserves the original started_at.
+-- The V2 reopen operation uses a separate RPC.
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.prevent_session_reset_after_start()
@@ -45,28 +39,30 @@ LANGUAGE plpgsql
 SET search_path = public
 AS $$
 BEGIN
-  -- Existing privileged migration/admin mechanism.
-  -- Preserve this compatibility path.
+
+  -- Existing controlled internal role.
   IF current_user = 'route_session_admin' THEN
     RETURN NEW;
   END IF;
 
-  -- ----------------------------------------------------------
-  -- Completed sessions are immutable except for the controlled
-  -- admin reopen operation.
-  -- ----------------------------------------------------------
+
+  -- ==========================================================
+  -- COMPLETED SESSIONS
+  --
+  -- Normally immutable.
+  -- V2 admin reopen is the only controlled exception.
+  -- ==========================================================
+
   IF OLD.status = 'completed' THEN
 
-    IF current_setting(
-         'akashisys.admin_reopen_route_session',
-         true
-       ) = 'on'
+    IF current_user = 'postgres'
        AND NEW.status = 'active'
        AND NEW.started_at IS NOT DISTINCT FROM OLD.started_at
        AND NEW.completed_at IS NULL
     THEN
       RETURN NEW;
     END IF;
+
 
     IF NEW.status <> OLD.status
        OR NEW.started_at IS DISTINCT FROM OLD.started_at
@@ -81,12 +77,14 @@ BEGIN
   END IF;
 
 
-  -- ----------------------------------------------------------
-  -- pending -> active
-  -- ----------------------------------------------------------
+  -- ==========================================================
+  -- PENDING -> ACTIVE
+  -- ==========================================================
+
   IF OLD.status = 'pending'
      AND NEW.status = 'active'
   THEN
+
     IF NEW.started_at IS NULL
        OR NEW.completed_at IS NOT NULL
     THEN
@@ -96,12 +94,14 @@ BEGIN
     END IF;
 
 
-  -- ----------------------------------------------------------
-  -- active -> paused
-  -- ----------------------------------------------------------
+  -- ==========================================================
+  -- ACTIVE -> PAUSED
+  -- ==========================================================
+
   ELSIF OLD.status = 'active'
         AND NEW.status = 'paused'
   THEN
+
     IF NEW.started_at IS DISTINCT FROM OLD.started_at
        OR NEW.completed_at IS NOT NULL
     THEN
@@ -111,12 +111,14 @@ BEGIN
     END IF;
 
 
-  -- ----------------------------------------------------------
-  -- paused -> active
-  -- ----------------------------------------------------------
+  -- ==========================================================
+  -- PAUSED -> ACTIVE
+  -- ==========================================================
+
   ELSIF OLD.status = 'paused'
         AND NEW.status = 'active'
   THEN
+
     IF NEW.started_at IS DISTINCT FROM OLD.started_at
        OR NEW.completed_at IS NOT NULL
     THEN
@@ -126,9 +128,10 @@ BEGIN
     END IF;
 
 
-  -- ----------------------------------------------------------
-  -- active/paused -> completed
-  -- ----------------------------------------------------------
+  -- ==========================================================
+  -- ACTIVE/PAUSED -> COMPLETED
+  -- ==========================================================
+
   ELSIF (
     OLD.status = 'active'
     OR OLD.status = 'paused'
@@ -146,8 +149,9 @@ BEGIN
     END IF;
 
 
-    -- Prevent completion when the recorded stock has already
-    -- been oversold or over-returned.
+    -- Prevent completion when loaded stock is already
+    -- inconsistent with non-voided sales/returns.
+
     IF EXISTS (
       SELECT 1
       FROM public.truck_loads tl
@@ -198,10 +202,12 @@ BEGIN
     END IF;
 
 
-  -- ----------------------------------------------------------
-  -- Any other status transition is invalid.
-  -- ----------------------------------------------------------
+  -- ==========================================================
+  -- Everything else is invalid.
+  -- ==========================================================
+
   ELSIF OLD.status <> NEW.status THEN
+
     RAISE EXCEPTION
       'Invalid route session status transition: % -> %',
       OLD.status,
@@ -209,16 +215,16 @@ BEGIN
       USING ERRCODE = 'P0001';
 
 
-  -- ----------------------------------------------------------
-  -- Prevent timestamp edits outside valid lifecycle changes.
-  -- ----------------------------------------------------------
   ELSIF NEW.started_at IS DISTINCT FROM OLD.started_at
         OR NEW.completed_at IS DISTINCT FROM OLD.completed_at
   THEN
+
     RAISE EXCEPTION
       'Route session timestamps cannot be edited outside a valid state transition'
       USING ERRCODE = 'P0001';
+
   END IF;
+
 
   RETURN NEW;
 END;
@@ -226,14 +232,10 @@ $$;
 
 
 -- ============================================================
--- 3. Controlled admin reopen implementation
---
--- SECURITY DEFINER is intentional here because the operation
--- must bypass the normal completed-session immutability guard.
--- Authorization is still checked inside the function.
+-- 3. NEW V2 ADMIN REOPEN RPC
 -- ============================================================
 
-CREATE OR REPLACE FUNCTION private.admin_reopen_route_session(
+CREATE OR REPLACE FUNCTION private.admin_reopen_route_session_v2(
   p_session_id uuid,
   p_admin_id uuid,
   p_target_status text DEFAULT 'active'
@@ -249,15 +251,34 @@ DECLARE
 BEGIN
 
   -- ----------------------------------------------------------
-  -- Only ACTIVE is allowed.
-  -- Never allow completed -> pending.
+  -- Authentication & Authorization Checks
   -- ----------------------------------------------------------
+
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Authenticated user required'
+      USING ERRCODE = 'P0001';
+  END IF;
+
+  IF p_admin_id IS DISTINCT FROM auth.uid() THEN
+    RAISE EXCEPTION
+      'Admin identity does not match authenticated user'
+      USING ERRCODE = 'P0001';
+  END IF;
+
+  -- ----------------------------------------------------------
+  -- Only ACTIVE is a legal reopen target.
+  -- ----------------------------------------------------------
+
   IF p_target_status <> 'active' THEN
     RAISE EXCEPTION
       'Completed sessions can only be reopened to active'
       USING ERRCODE = 'P0001';
   END IF;
 
+
+  -- ----------------------------------------------------------
+  -- Required parameters.
+  -- ----------------------------------------------------------
 
   IF p_session_id IS NULL
      OR p_admin_id IS NULL
@@ -269,12 +290,13 @@ BEGIN
 
 
   -- ----------------------------------------------------------
-  -- Verify administrator identity.
+  -- Verify the authenticated user is an admin.
   -- ----------------------------------------------------------
+
   IF NOT EXISTS (
     SELECT 1
     FROM public.profiles p
-    WHERE p.id = p_admin_id
+    WHERE p.id = auth.uid()
       AND p.role = 'admin'
   )
   THEN
@@ -285,9 +307,9 @@ BEGIN
 
 
   -- ----------------------------------------------------------
-  -- Lock the session to prevent concurrent reopen/complete
-  -- operations.
+  -- Lock session.
   -- ----------------------------------------------------------
+
   SELECT *
   INTO v_session
   FROM public.route_sessions
@@ -302,6 +324,10 @@ BEGIN
   END IF;
 
 
+  -- ----------------------------------------------------------
+  -- Only completed sessions can be reopened.
+  -- ----------------------------------------------------------
+
   IF v_session.status <> 'completed' THEN
     RAISE EXCEPTION
       'Only completed route sessions can be reopened'
@@ -310,8 +336,9 @@ BEGIN
 
 
   -- ----------------------------------------------------------
-  -- Record the administrative correction BEFORE changing data.
+  -- Audit BEFORE mutation.
   -- ----------------------------------------------------------
+
   INSERT INTO public.corrections (
     table_name,
     record_id,
@@ -335,7 +362,7 @@ BEGIN
       'completed_at', NULL,
       'stopped_by', NULL
     ),
-    p_admin_id::text,
+    auth.uid()::text,
     'Admin reopened completed route session'
   )
   RETURNING id
@@ -343,25 +370,11 @@ BEGIN
 
 
   -- ----------------------------------------------------------
-  -- Transaction-local permission for the lifecycle trigger.
+  -- Reopen completed -> active.
   --
-  -- This does NOT allow completed -> pending.
-  -- It allows only completed -> active while preserving
-  -- the original started_at.
+  -- No new start time is created.
   -- ----------------------------------------------------------
-  PERFORM set_config(
-    'akashisys.admin_reopen_route_session',
-    'on',
-    true
-  );
 
-
-  -- ----------------------------------------------------------
-  -- Reopen the session.
-  --
-  -- IMPORTANT:
-  -- started_at is intentionally NOT modified.
-  -- ----------------------------------------------------------
   UPDATE public.route_sessions
   SET status = 'active',
       completed_at = NULL,
@@ -380,18 +393,16 @@ BEGIN
     'started_at', v_session.started_at,
     'correction_id', v_correction_id
   );
+
 END;
 $$;
 
 
 -- ============================================================
--- 4. Public reopen wrapper
---
--- The privileged implementation remains private.
--- The public wrapper is invoker security.
+-- 4. PUBLIC V2 REOPEN WRAPPER
 -- ============================================================
 
-CREATE OR REPLACE FUNCTION public.admin_reopen_route_session(
+CREATE OR REPLACE FUNCTION public.admin_reopen_route_session_v2(
   p_session_id uuid,
   p_admin_id uuid,
   p_target_status text DEFAULT 'active'
@@ -401,7 +412,7 @@ LANGUAGE sql
 SECURITY INVOKER
 SET search_path = ''
 AS $$
-  SELECT private.admin_reopen_route_session(
+  SELECT private.admin_reopen_route_session_v2(
     p_session_id,
     p_admin_id,
     p_target_status
@@ -410,16 +421,7 @@ $$;
 
 
 -- ============================================================
--- 5. Truck-load mutation guard
---
--- Normal users cannot alter quantity_loaded after the route
--- starts.
---
--- The controlled admin correction RPC temporarily enables:
---
---   akashisys.admin_correct_truck_load = on
---
--- This remains transaction-local.
+-- 5. HARDEN TRUCK-LOAD MUTATION GUARD
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.guard_truck_load_mutation()
@@ -446,9 +448,10 @@ BEGIN
   END IF;
 
 
-  -- ----------------------------------------------------------
+  -- ==========================================================
   -- DELETE
-  -- ----------------------------------------------------------
+  -- ==========================================================
+
   IF TG_OP = 'DELETE' THEN
 
     IF session_status <> 'pending' THEN
@@ -461,9 +464,10 @@ BEGIN
   END IF;
 
 
-  -- ----------------------------------------------------------
+  -- ==========================================================
   -- INSERT
-  -- ----------------------------------------------------------
+  -- ==========================================================
+
   IF TG_OP = 'INSERT' THEN
 
     IF session_status <> 'pending' THEN
@@ -476,9 +480,10 @@ BEGIN
   END IF;
 
 
-  -- ----------------------------------------------------------
-  -- Never change the identity of a saved load.
-  -- ----------------------------------------------------------
+  -- ==========================================================
+  -- UPDATE
+  -- ==========================================================
+
   IF old.session_id IS DISTINCT FROM new.session_id
      OR old.product_id IS DISTINCT FROM new.product_id
   THEN
@@ -488,17 +493,16 @@ BEGIN
   END IF;
 
 
-  -- ----------------------------------------------------------
-  -- quantity_loaded may only change through the controlled
-  -- admin correction RPC.
-  -- ----------------------------------------------------------
+  -- ==========================================================
+  -- Loaded quantity correction.
+  --
+  -- Only the trusted SECURITY DEFINER correction RPC runs
+  -- under the postgres database role.
+  -- ==========================================================
+
   IF old.quantity_loaded IS DISTINCT FROM new.quantity_loaded THEN
 
-    IF current_setting(
-         'akashisys.admin_correct_truck_load',
-         true
-       ) <> 'on'
-    THEN
+    IF current_user <> 'postgres' THEN
       RAISE EXCEPTION
         'Loaded stock quantity can only be changed through the admin correction RPC'
         USING ERRCODE = 'P0001';
@@ -507,9 +511,10 @@ BEGIN
   END IF;
 
 
-  -- ----------------------------------------------------------
-  -- Completed stock remains immutable.
-  -- ----------------------------------------------------------
+  -- ==========================================================
+  -- Completed sessions are immutable.
+  -- ==========================================================
+
   IF session_status = 'completed' THEN
 
     IF old.quantity_returned IS DISTINCT FROM new.quantity_returned
@@ -527,9 +532,11 @@ BEGIN
     'paused'
   )
   THEN
+
     RAISE EXCEPTION
       'Invalid route session status'
       USING ERRCODE = 'P0001';
+
   END IF;
 
 
@@ -539,23 +546,10 @@ $$;
 
 
 -- ============================================================
--- 6. Controlled admin truck-load correction
---
--- This edits an EXISTING truck-load row.
---
--- It does NOT:
---   - create a new load
---   - delete a load
---   - alter product identity
---   - alter session identity
---   - modify completed sessions
---
--- New quantity cannot be lower than:
---
---   sold quantity + returned quantity
+-- 6. NEW V2 TRUCK-LOAD CORRECTION RPC
 -- ============================================================
 
-CREATE OR REPLACE FUNCTION private.admin_correct_truck_load(
+CREATE OR REPLACE FUNCTION private.admin_correct_truck_load_v2(
   p_session_id uuid,
   p_product_id uuid,
   p_quantity_loaded integer,
@@ -572,14 +566,31 @@ DECLARE
   v_correction_id uuid;
   v_sold_qty integer;
   v_returned_qty integer;
-  v_user uuid := (SELECT auth.uid());
+  v_user uuid;
 BEGIN
+
+  -- ----------------------------------------------------------
+  -- Get authenticated user.
+  -- ----------------------------------------------------------
+
+  v_user := auth.uid();
+
+
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION
+      'Authenticated user required'
+      USING ERRCODE = 'P0001';
+  END IF;
+
 
   -- ----------------------------------------------------------
   -- Admin authorization.
   -- ----------------------------------------------------------
+
   IF NOT COALESCE(
-    (SELECT private.is_admin()),
+    (
+      SELECT private.is_admin()
+    ),
     false
   )
   THEN
@@ -590,14 +601,19 @@ BEGIN
 
 
   -- ----------------------------------------------------------
-  -- A correction must always have a reason.
+  -- Required reason.
   -- ----------------------------------------------------------
+
   IF NULLIF(trim(p_reason), '') IS NULL THEN
     RAISE EXCEPTION
       'Truck load correction reason is required'
       USING ERRCODE = 'P0001';
   END IF;
 
+
+  -- ----------------------------------------------------------
+  -- Required IDs.
+  -- ----------------------------------------------------------
 
   IF p_session_id IS NULL
      OR p_product_id IS NULL
@@ -607,6 +623,10 @@ BEGIN
       USING ERRCODE = 'P0001';
   END IF;
 
+
+  -- ----------------------------------------------------------
+  -- Quantity must be positive.
+  -- ----------------------------------------------------------
 
   IF p_quantity_loaded IS NULL
      OR p_quantity_loaded <= 0
@@ -620,6 +640,7 @@ BEGIN
   -- ----------------------------------------------------------
   -- Lock the route session.
   -- ----------------------------------------------------------
+
   SELECT *
   INTO v_session
   FROM public.route_sessions
@@ -634,12 +655,20 @@ BEGIN
   END IF;
 
 
+  -- ----------------------------------------------------------
+  -- Completed sessions cannot be corrected.
+  -- ----------------------------------------------------------
+
   IF v_session.status = 'completed' THEN
     RAISE EXCEPTION
       'Completed route session stock is immutable'
       USING ERRCODE = 'P0001';
   END IF;
 
+
+  -- ----------------------------------------------------------
+  -- Valid lifecycle only.
+  -- ----------------------------------------------------------
 
   IF v_session.status NOT IN (
     'pending',
@@ -654,8 +683,9 @@ BEGIN
 
 
   -- ----------------------------------------------------------
-  -- Product must still be active.
+  -- Product must be active.
   -- ----------------------------------------------------------
+
   IF NOT EXISTS (
     SELECT 1
     FROM public.products p
@@ -670,8 +700,9 @@ BEGIN
 
 
   -- ----------------------------------------------------------
-  -- Lock the existing truck-load row.
+  -- Lock exact truck-load row.
   -- ----------------------------------------------------------
+
   SELECT *
   INTO v_record
   FROM public.truck_loads
@@ -688,8 +719,9 @@ BEGIN
 
 
   -- ----------------------------------------------------------
-  -- Calculate already-sold quantity.
+  -- Calculate non-voided sales.
   -- ----------------------------------------------------------
+
   SELECT COALESCE(
     SUM(s.quantity),
     0
@@ -702,8 +734,9 @@ BEGIN
 
 
   -- ----------------------------------------------------------
-  -- Calculate already-returned quantity.
+  -- Calculate non-voided returns.
   -- ----------------------------------------------------------
+
   SELECT COALESCE(
     SUM(r.quantity),
     0
@@ -716,32 +749,23 @@ BEGIN
 
 
   -- ----------------------------------------------------------
-  -- Never allow loaded quantity below stock already consumed
-  -- by sales or returns.
+  -- Never reduce loaded quantity below consumed stock.
   -- ----------------------------------------------------------
+
   IF p_quantity_loaded < v_sold_qty + v_returned_qty THEN
+
     RAISE EXCEPTION
       'Loaded quantity cannot be less than already sold plus returned quantity (%)',
       v_sold_qty + v_returned_qty
       USING ERRCODE = 'P0001';
+
   END IF;
 
 
   -- ----------------------------------------------------------
-  -- Temporarily permit the trigger to accept the controlled
-  -- quantity correction.
-  -- Transaction-local only.
+  -- Update existing row.
   -- ----------------------------------------------------------
-  PERFORM set_config(
-    'akashisys.admin_correct_truck_load',
-    'on',
-    true
-  );
 
-
-  -- ----------------------------------------------------------
-  -- Update the existing row.
-  -- ----------------------------------------------------------
   UPDATE public.truck_loads
   SET quantity_loaded = p_quantity_loaded,
       updated_at = now()
@@ -749,8 +773,9 @@ BEGIN
 
 
   -- ----------------------------------------------------------
-  -- Record the correction AFTER the successful update.
+  -- Audit exact correction.
   -- ----------------------------------------------------------
+
   INSERT INTO public.corrections (
     table_name,
     record_id,
@@ -770,10 +795,7 @@ BEGIN
       FROM public.truck_loads tl
       WHERE tl.id = v_record.id
     ),
-    COALESCE(
-      v_user::text,
-      'admin'
-    ),
+    v_user::text,
     trim(p_reason)
   )
   RETURNING id
@@ -781,15 +803,16 @@ BEGIN
 
 
   RETURN v_correction_id;
+
 END;
 $$;
 
 
 -- ============================================================
--- 7. Public truck-load correction wrapper
+-- 7. PUBLIC V2 TRUCK-LOAD CORRECTION WRAPPER
 -- ============================================================
 
-CREATE OR REPLACE FUNCTION public.admin_correct_truck_load(
+CREATE OR REPLACE FUNCTION public.admin_correct_truck_load_v2(
   p_session_id uuid,
   p_product_id uuid,
   p_quantity_loaded integer,
@@ -800,7 +823,7 @@ LANGUAGE sql
 SECURITY INVOKER
 SET search_path = ''
 AS $$
-  SELECT private.admin_correct_truck_load(
+  SELECT private.admin_correct_truck_load_v2(
     p_session_id,
     p_product_id,
     p_quantity_loaded,
@@ -810,41 +833,47 @@ $$;
 
 
 -- ============================================================
--- 8. Function permissions
+-- 8. LOCK DOWN PRIVATE FUNCTIONS
 -- ============================================================
 
 REVOKE ALL ON FUNCTION
-  private.admin_reopen_route_session(uuid, uuid, text)
+  private.admin_reopen_route_session_v2(uuid, uuid, text)
 FROM PUBLIC, anon, authenticated;
 
 REVOKE ALL ON FUNCTION
-  public.admin_reopen_route_session(uuid, uuid, text)
+  private.admin_correct_truck_load_v2(uuid, uuid, integer, text)
 FROM PUBLIC, anon, authenticated;
+
+
+-- ============================================================
+-- 9. PUBLIC RPC PERMISSIONS
+-- ============================================================
+
+REVOKE ALL ON FUNCTION
+  public.admin_reopen_route_session_v2(uuid, uuid, text)
+FROM PUBLIC, anon, authenticated;
+
+GRANT EXECUTE ON FUNCTION
+  public.admin_reopen_route_session_v2(uuid, uuid, text)
+TO authenticated;
+
+
+REVOKE ALL ON FUNCTION
+  public.admin_correct_truck_load_v2(uuid, uuid, integer, text)
+FROM PUBLIC, anon, authenticated;
+
+GRANT EXECUTE ON FUNCTION
+  public.admin_correct_truck_load_v2(uuid, uuid, integer, text)
+TO authenticated;
+
+
+-- ============================================================
+-- 10. TRIGGER FUNCTION MUST NOT BE DIRECTLY CALLABLE
+-- ============================================================
 
 REVOKE ALL ON FUNCTION
   public.guard_truck_load_mutation()
 FROM PUBLIC, anon, authenticated;
-
-REVOKE ALL ON FUNCTION
-  private.admin_correct_truck_load(uuid, uuid, integer, text)
-FROM PUBLIC, anon;
-
-REVOKE ALL ON FUNCTION
-  public.admin_correct_truck_load(uuid, uuid, integer, text)
-FROM PUBLIC, anon, authenticated;
-
-
-GRANT EXECUTE ON FUNCTION
-  private.admin_reopen_route_session(uuid, uuid, text)
-TO service_role;
-
-GRANT EXECUTE ON FUNCTION
-  public.admin_reopen_route_session(uuid, uuid, text)
-TO service_role;
-
-GRANT EXECUTE ON FUNCTION
-  public.admin_correct_truck_load(uuid, uuid, integer, text)
-TO authenticated;
 
 
 COMMIT;
